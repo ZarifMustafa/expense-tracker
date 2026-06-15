@@ -1165,20 +1165,20 @@ function openApiKeyModal(pendingScan = false) {
   const existing = state.data.settings.anthropicApiKey || '';
   openModal(`
     <div class="modal-header">
-      <div class="modal-title">Anthropic API Key</div>
+      <div class="modal-title">Google AI Studio API Key</div>
       <button class="modal-close" data-action="close-modal">✕</button>
     </div>
     <div class="modal-body">
       <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px;line-height:1.6">
-        Receipt scanning uses Claude AI vision to extract expenses from photos.
-        Enter your Anthropic API key to enable this feature.
+        Receipt scanning uses Google Gemini AI (free tier) to extract expenses from photos.
+        Enter your Google AI Studio API key to enable this feature.
         Your key is stored locally on this device only.
       </p>
       <div class="form-group">
-        <label class="form-label">API Key <span class="req">*</span></label>
+        <label class="form-label">Google AI Studio API Key <span class="req">*</span></label>
         <input id="api-key-input" class="form-input" type="password"
-          value="${escHtml(existing)}" placeholder="sk-ant-...">
-        <div class="form-hint">Get your key at console.anthropic.com</div>
+          value="${escHtml(existing)}" placeholder="AIza...">
+        <div class="form-hint">Get a free key at aistudio.google.com → Get API Key</div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1229,7 +1229,8 @@ async function startReceiptScan(apiKey) {
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" data-action="close-modal">Close</button>
-        <button class="btn btn-primary" data-action="save-api-key" data-pending-scan="false">Update API Key</button>
+        <button class="btn btn-secondary" data-action="close-modal">Close</button>
+        <button class="btn btn-primary" data-action="open-api-key">Update API Key</button>
       </div>`);
     return;
   }

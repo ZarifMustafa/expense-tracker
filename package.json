@@ -7,7 +7,7 @@
     "start": "electron ."
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.104.2",
+    "@google/generative-ai": "^0.24.1",
     "chart.js": "^4.4.1"
   },
   "devDependencies": {

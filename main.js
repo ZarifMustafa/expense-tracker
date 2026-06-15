@@ -75,26 +75,19 @@ ipcMain.handle('open-file-dialog', async () => {
 
 ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
   try {
-    const Anthropic = require('@anthropic-ai/sdk');
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
     const imageBuffer = fs.readFileSync(imagePath);
     const base64 = imageBuffer.toString('base64');
     const ext = path.extname(imagePath).toLowerCase().slice(1);
-    const mediaType = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg'
+    const mimeType = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg'
       : ext === 'png' ? 'image/png'
       : ext === 'webp' ? 'image/webp'
       : 'image/jpeg';
 
-    const client = new Anthropic({ apiKey });
-    const response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-          {
-            type: 'text',
-            text: `Analyze this receipt and extract expense information. Return ONLY a JSON object, no other text:
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+    const prompt = `Analyze this receipt image and extract expense information. Return ONLY a JSON object, no other text:
 {
   "merchant": "store name or null",
   "date": "YYYY-MM-DD if visible or null",
@@ -103,13 +96,14 @@ ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
   ],
   "total": numeric_total_or_null
 }
-Rules: amounts are numbers only (no currency symbols), names are concise. If individual items aren't visible, return one item with the total.`
-          }
-        ]
-      }]
-    });
+Rules: amounts are plain numbers only (no currency symbols or commas), item names are concise. If individual items are not clearly visible, return one item using the total amount.`;
 
-    const text = response.content[0].text.trim();
+    const result = await model.generateContent([
+      prompt,
+      { inlineData: { data: base64, mimeType } }
+    ]);
+
+    const text = result.response.text().trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Could not parse receipt data from image');
     const data = JSON.parse(jsonMatch[0]);
