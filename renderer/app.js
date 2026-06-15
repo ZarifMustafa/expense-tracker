@@ -35,7 +35,7 @@ let state = {
   analysisYear: now.getFullYear(),
   logsMonth: 0,
   logsYear: 0,
-  data: { budgetItems: [], expenses: [], wishItems: [] }
+  data: { budgetItems: [], expenses: [], wishItems: [], settings: {} }
 };
 
 /* ============================================================
@@ -43,7 +43,12 @@ let state = {
    ============================================================ */
 async function loadData() {
   const d = await window.api.getData();
-  state.data = { budgetItems: d.budgetItems || [], expenses: d.expenses || [], wishItems: d.wishItems || [] };
+  state.data = {
+    budgetItems: d.budgetItems || [],
+    expenses: d.expenses || [],
+    wishItems: d.wishItems || [],
+    settings: d.settings || {}
+  };
 }
 
 async function persist() { await window.api.saveData(state.data); }
@@ -281,8 +286,14 @@ function budgetItemCard(item) {
         ${item.note ? `<div class="budget-item-note">${escHtml(item.note)}</div>` : ''}
       </div>
       <div class="budget-item-costs">
-        <div class="cost-estimated">Budget: ${fmtCurrency(item.estimatedCost)}</div>
-        <div class="cost-actual">${fmtCurrency(item.actual)}</div>
+        <div class="cost-row">
+          <span class="cost-label">Budget:</span>
+          <span class="cost-value budget">${fmtCurrency(item.estimatedCost)}</span>
+        </div>
+        <div class="cost-row">
+          <span class="cost-label">Spent:</span>
+          <span class="cost-value spent">${fmtCurrency(item.actual)}</span>
+        </div>
         ${diffHtml}
       </div>
       <div class="budget-item-actions">
@@ -1057,6 +1068,11 @@ document.addEventListener('click', async (e) => {
       state.data.budgetItems = state.data.budgetItems.filter(b => b.id !== id);
       await persist(); toast('Budget item deleted'); renderPage(); break;
 
+    case 'open-scan-receipt': await openScanReceiptFlow(); break;
+    case 'save-api-key': await saveApiKey(); break;
+    case 'open-api-key': openApiKeyModal(false); break;
+    case 'confirm-receipt-items': await confirmReceiptItems(); break;
+
     case 'open-add-expense': await openAddExpenseModal(); break;
     case 'edit-expense': {
       const ex = state.data.expenses.find(e2 => e2.id === id);
@@ -1132,6 +1148,210 @@ document.addEventListener('click', (e) => {
   document.querySelectorAll(`.color-swatch[data-picker="${picker}"]`).forEach(s => s.classList.remove('selected'));
   swatch.classList.add('selected');
 });
+
+/* ============================================================
+   RECEIPT SCAN FLOW
+   ============================================================ */
+async function openScanReceiptFlow() {
+  const apiKey = state.data.settings.anthropicApiKey;
+  if (!apiKey) {
+    openApiKeyModal();
+    return;
+  }
+  await startReceiptScan(apiKey);
+}
+
+function openApiKeyModal(pendingScan = false) {
+  const existing = state.data.settings.anthropicApiKey || '';
+  openModal(`
+    <div class="modal-header">
+      <div class="modal-title">Anthropic API Key</div>
+      <button class="modal-close" data-action="close-modal">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px;line-height:1.6">
+        Receipt scanning uses Claude AI vision to extract expenses from photos.
+        Enter your Anthropic API key to enable this feature.
+        Your key is stored locally on this device only.
+      </p>
+      <div class="form-group">
+        <label class="form-label">API Key <span class="req">*</span></label>
+        <input id="api-key-input" class="form-input" type="password"
+          value="${escHtml(existing)}" placeholder="sk-ant-...">
+        <div class="form-hint">Get your key at console.anthropic.com</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary" data-action="save-api-key" data-pending-scan="${pendingScan}">
+        Save &amp; ${pendingScan ? 'Scan Receipt' : 'Save'}
+      </button>
+    </div>`);
+}
+
+async function saveApiKey() {
+  const key = document.getElementById('api-key-input').value.trim();
+  if (!key) { toast('API key is required', 'error'); return; }
+  state.data.settings.anthropicApiKey = key;
+  await persist();
+  closeModal();
+  toast('API key saved', 'success');
+  await startReceiptScan(key);
+}
+
+async function startReceiptScan(apiKey) {
+  const filePath = await window.api.openFileDialog();
+  if (!filePath) return;
+
+  // Show loading modal
+  openModal(`
+    <div class="modal-header">
+      <div class="modal-title">Scanning Receipt…</div>
+    </div>
+    <div class="modal-body scan-loading">
+      <div class="spinner"></div>
+      <p>Reading your receipt with Claude AI.<br>This may take a few seconds.</p>
+    </div>`);
+
+  const result = await window.api.scanReceipt({ imagePath: filePath, apiKey });
+
+  if (!result.ok) {
+    openModal(`
+      <div class="modal-header">
+        <div class="modal-title">Scan Failed</div>
+        <button class="modal-close" data-action="close-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="color:var(--danger);font-size:13.5px;margin-bottom:12px">${escHtml(result.error)}</p>
+        <p style="font-size:12.5px;color:var(--text-muted)">
+          Make sure your API key is valid and the image clearly shows a receipt.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-action="close-modal">Close</button>
+        <button class="btn btn-primary" data-action="save-api-key" data-pending-scan="false">Update API Key</button>
+      </div>`);
+    return;
+  }
+
+  openReceiptReviewModal(result.data, filePath);
+}
+
+async function openReceiptReviewModal(receipt, filePath) {
+  const receiptDate = receipt.date || todayISO();
+  const expDate = new Date(receiptDate);
+  const expMonth = expDate.getMonth() + 1;
+  const expYear = expDate.getFullYear();
+  await ensureMisc(expMonth, expYear);
+  const budgetItems = getBudgetItems(expMonth, expYear);
+
+  const categoryOptions = budgetItems.map(b =>
+    `<option value="${b.id}">${escHtml(b.name)}</option>`
+  ).join('');
+
+  const itemRows = receipt.items.map((item, i) => `
+    <div class="receipt-item-row" id="receipt-row-${i}">
+      <div class="receipt-item-header">
+        <div class="receipt-item-num">${i + 1}</div>
+        <label class="receipt-item-exclude">
+          <input type="checkbox" id="exclude-${i}" onchange="toggleReceiptRow(${i})"> Skip this item
+        </label>
+      </div>
+      <div class="receipt-item-fields">
+        <div class="form-group" style="margin:0">
+          <label class="form-label" style="margin-bottom:4px">Name</label>
+          <input class="form-input" id="ri-name-${i}" value="${escHtml(item.name)}">
+        </div>
+        <div class="form-group" style="margin:0;min-width:110px">
+          <label class="form-label" style="margin-bottom:4px">Amount</label>
+          <input class="form-input" id="ri-amount-${i}" type="number" min="0" value="${item.amount || ''}">
+        </div>
+      </div>
+      <div class="receipt-item-cat">
+        <label>Budget Category</label>
+        <select class="form-select" id="ri-cat-${i}">${categoryOptions}</select>
+      </div>
+    </div>`).join('');
+
+  openModal(`
+    <div class="modal-header">
+      <div class="modal-title">Review Receipt Items</div>
+      <button class="modal-close" data-action="close-modal">✕</button>
+    </div>
+    <div class="modal-body" style="padding-bottom:8px">
+      <div class="receipt-info-bar">
+        ${receipt.merchant ? `<span>🏪 <strong>${escHtml(receipt.merchant)}</strong></span>` : ''}
+        <span>📅 <strong>${fmtDate(receiptDate)}</strong></span>
+        ${receipt.total != null ? `<span>💰 Total: <strong>${fmtCurrency(receipt.total)}</strong></span>` : ''}
+        <span style="margin-left:auto;font-size:12px">${receipt.items.length} item${receipt.items.length !== 1 ? 's' : ''} found</span>
+      </div>
+      <div class="form-group" style="margin-bottom:14px">
+        <label class="form-label">Expense Date</label>
+        <input class="form-input" type="date" id="receipt-date" value="${receiptDate}" max="${todayISO()}" style="max-width:180px">
+      </div>
+      <div class="receipt-items">${itemRows}</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary" data-action="confirm-receipt-items"
+        data-count="${receipt.items.length}" data-date="${receiptDate}">
+        Add All Expenses
+      </button>
+    </div>`);
+}
+
+async function confirmReceiptItems() {
+  const btn = document.querySelector('[data-action="confirm-receipt-items"]');
+  const count = parseInt(btn.dataset.count);
+  const dateVal = document.getElementById('receipt-date').value || todayISO();
+  const expDate = new Date(dateVal);
+  const expMonth = expDate.getMonth() + 1;
+  const expYear = expDate.getFullYear();
+  await ensureMisc(expMonth, expYear);
+
+  let added = 0;
+  for (let i = 0; i < count; i++) {
+    const skipEl = document.getElementById(`exclude-${i}`);
+    if (skipEl && skipEl.checked) continue;
+
+    const name = (document.getElementById(`ri-name-${i}`)?.value || '').trim();
+    const amount = parseFloat(document.getElementById(`ri-amount-${i}`)?.value);
+    if (!name || !amount || isNaN(amount)) continue;
+
+    const budgetItemId = document.getElementById(`ri-cat-${i}`)?.value || getMiscId(expMonth, expYear);
+    const budgetItem = getBudgetItem(budgetItemId);
+
+    const expense = {
+      id: await genId(),
+      name,
+      actualCost: amount,
+      color: randomColor(),
+      date: dateVal,
+      note: 'Added from receipt scan',
+      budgetItemId,
+      wishItemId: null
+    };
+    state.data.expenses.push(expense);
+
+    if (budgetItem && budgetItem.status === 'pending') {
+      budgetItem.status = 'in-progress';
+    }
+    added++;
+  }
+
+  if (added === 0) { toast('No items were added', 'error'); return; }
+  await persist();
+  closeModal();
+  toast(`${added} expense${added !== 1 ? 's' : ''} added from receipt`, 'success');
+  renderPage();
+}
+
+// Called by inline onchange on receipt rows
+window.toggleReceiptRow = function(i) {
+  const row = document.getElementById(`receipt-row-${i}`);
+  const checked = document.getElementById(`exclude-${i}`)?.checked;
+  if (row) row.classList.toggle('excluded', checked);
+};
 
 /* ============================================================
    INIT
