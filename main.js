@@ -75,7 +75,7 @@ ipcMain.handle('open-file-dialog', async () => {
 
 ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
   try {
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    const { GoogleGenAI } = require('@google/genai');
     const imageBuffer = fs.readFileSync(imagePath);
     const base64 = imageBuffer.toString('base64');
     const ext = path.extname(imagePath).toLowerCase().slice(1);
@@ -84,8 +84,7 @@ ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
       : ext === 'webp' ? 'image/webp'
       : 'image/jpeg';
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
+    const ai = new GoogleGenAI({ apiKey });
 
     const prompt = `Analyze this receipt image and extract expense information. Return ONLY a JSON object, no other text:
 {
@@ -96,25 +95,32 @@ ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
   ],
   "total": numeric_total_or_null
 }
-Rules: amounts are plain numbers only (no currency symbols or commas), item names are concise. If individual items are not clearly visible, return one item using the total amount.`;
+Rules: amounts are plain numbers only (no currency symbols or commas), names are concise. If individual items are not clearly visible, return one item using the total amount.`;
 
-    const result = await model.generateContent([
-      prompt,
-      { inlineData: { data: base64, mimeType } }
-    ]);
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash-lite',
+      contents: [{
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType, data: base64 } }
+        ]
+      }]
+    });
 
-    const text = result.response.text().trim();
+    const text = response.text.trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Could not parse receipt data from image');
     const data = JSON.parse(jsonMatch[0]);
     if (!data.items || !data.items.length) throw new Error('No items found in receipt');
     return { ok: true, data };
   } catch (e) {
-    let error = e.message;
-    if (error.includes('429') || error.includes('quota') || error.includes('Too Many Requests')) {
-      error = 'Quota exceeded. Make sure you are using an API key from aistudio.google.com (not Google Cloud Console). AI Studio keys have a free tier. If you already have one, wait a minute and try again.';
-    } else if (error.includes('400') || error.includes('API_KEY_INVALID') || error.includes('invalid')) {
+    let error = e.message || String(e);
+    if (error.includes('429') || error.includes('quota') || error.includes('Too Many Requests') || error.includes('RESOURCE_EXHAUSTED')) {
+      error = 'Quota exceeded for your API key. Your free-tier limit may be exhausted for today. Try again tomorrow, or check https://ai.dev/rate-limit for your current usage.';
+    } else if (error.includes('401') || error.includes('403') || error.includes('API_KEY_INVALID') || error.includes('invalid API key')) {
       error = 'Invalid API key. Get a free key from aistudio.google.com → Get API Key.';
+    } else if (error.includes('404')) {
+      error = 'Model not available for your API key. Make sure your key is from aistudio.google.com.';
     }
     return { ok: false, error };
   }
