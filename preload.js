@@ -5,5 +5,5 @@ contextBridge.exposeInMainWorld('api', {
   saveData: (data) => ipcRenderer.invoke('save-data', data),
   genId: () => ipcRenderer.invoke('gen-id'),
   openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
-  scanReceipt: (imagePath) => ipcRenderer.invoke('scan-receipt', { imagePath })
+  scanReceipt: (args) => ipcRenderer.invoke('scan-receipt', args)
 });

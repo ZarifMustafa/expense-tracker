@@ -73,82 +73,64 @@ ipcMain.handle('open-file-dialog', async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
-ipcMain.handle('scan-receipt', async (_, { imagePath }) => {
+ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
   try {
-    const { createWorker } = require('tesseract.js');
-    const worker = await createWorker('eng');
-    const { data: { text } } = await worker.recognize(imagePath);
-    await worker.terminate();
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey });
 
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-    if (!lines.length) throw new Error('No text found in image');
+    const imageBuffer = fs.readFileSync(imagePath);
+    const base64 = imageBuffer.toString('base64');
+    const ext = path.extname(imagePath).toLowerCase().slice(1);
+    const mediaType = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg'
+      : ext === 'png' ? 'image/png'
+      : ext === 'webp' ? 'image/webp'
+      : 'image/jpeg';
 
-    // Price pattern: a number like 150, 1,500, 150.00, 1500.00 at end of line
-    const priceRe = /([\d,]+\.?\d{0,2})\s*$/;
-    const skipRe = /\b(total|subtotal|sub-total|tax|vat|change|cash|card|payment|balance|discount|thank|receipt|invoice|bill|tel|phone|fax|www\.|http|address|date|time|order|table|server|cashier|welcome|visit|please|come again)\b/i;
-    const totalRe = /\b(grand\s*total|total|amount\s*due|net\s*total)\b/i;
+    const response = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: base64 }
+          },
+          {
+            type: 'text',
+            text: `Analyze this receipt image carefully and extract the expense information.
+Return ONLY a valid JSON object with no other text:
+{
+  "merchant": "store or restaurant name, or null",
+  "date": "YYYY-MM-DD format if a date is visible, or null",
+  "items": [
+    {"name": "item name", "amount": 0.00}
+  ],
+  "total": 0.00
+}
+Rules:
+- amounts must be plain numbers (no currency symbols)
+- only include actual purchased items, NOT tax, subtotal, total, balance, change, or payment lines
+- if you cannot read individual items clearly, create one entry with the receipt total
+- item names should be clean and concise`
+          }
+        ]
+      }]
+    });
 
-    let merchant = null;
-    let receiptDate = null;
-    let total = null;
-    const items = [];
-
-    // Merchant: first line that looks like a name (no digits, not a price line)
-    for (const line of lines.slice(0, 5)) {
-      if (!priceRe.test(line) && !/^\d/.test(line) && line.length > 2) {
-        merchant = line; break;
-      }
-    }
-
-    // Date: look for common date patterns
-    const datePatterns = [
-      /(\d{4}[-/]\d{2}[-/]\d{2})/,
-      /(\d{2}[-/]\d{2}[-/]\d{4})/,
-      /(\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4})/i
-    ];
-    for (const line of lines) {
-      for (const dp of datePatterns) {
-        const m = line.match(dp);
-        if (m) {
-          const raw = m[1];
-          // Try to normalise to YYYY-MM-DD
-          const d = new Date(raw.replace(/(\d{2})[-/](\d{2})[-/](\d{4})/, '$3-$2-$1'));
-          if (!isNaN(d)) { receiptDate = d.toISOString().slice(0, 10); break; }
-          receiptDate = raw; break;
-        }
-      }
-      if (receiptDate) break;
-    }
-
-    // Extract line items and total
-    for (const line of lines) {
-      const priceMatch = line.match(priceRe);
-      if (!priceMatch) continue;
-
-      const amountStr = priceMatch[1].replace(/,/g, '');
-      const amount = parseFloat(amountStr);
-      if (!amount || amount <= 0) continue;
-
-      if (totalRe.test(line)) { total = amount; continue; }
-      if (skipRe.test(line)) continue;
-
-      // Name = everything before the price, cleaned up
-      let name = line.slice(0, line.lastIndexOf(priceMatch[0])).trim();
-      name = name.replace(/^[\d\s\-*.x]+/, '').replace(/\s{2,}/g, ' ').trim();
-      if (!name || name.length < 2) name = 'Item';
-
-      items.push({ name, amount });
-    }
-
-    // If nothing extracted but we found a total, create one item
-    if (!items.length && total) {
-      items.push({ name: merchant ? `${merchant} purchase` : 'Receipt total', amount: total });
-    }
-
-    if (!items.length) throw new Error('Could not extract any items from this receipt. Try a clearer photo with better lighting.');
-
-    return { ok: true, data: { merchant, date: receiptDate, items, total } };
+    const text = response.content[0].text.trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('Could not parse receipt — try a clearer photo');
+    const data = JSON.parse(jsonMatch[0]);
+    if (!data.items || !data.items.length) throw new Error('No items found in receipt');
+    return { ok: true, data };
   } catch (e) {
-    return { ok: false, error: e.message || String(e) };
+    let msg = e.message || String(e);
+    if (msg.includes('401') || msg.includes('authentication') || msg.includes('api_key')) {
+      msg = 'Invalid API key. Check your key at console.anthropic.com → API Keys.';
+    } else if (msg.includes('429') || msg.includes('rate_limit')) {
+      msg = 'Rate limit reached. Wait a moment and try again.';
+    }
+    return { ok: false, error: msg };
   }
 });

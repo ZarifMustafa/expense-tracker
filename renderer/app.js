@@ -1069,6 +1069,8 @@ document.addEventListener('click', async (e) => {
       await persist(); toast('Budget item deleted'); renderPage(); break;
 
     case 'open-scan-receipt': await openScanReceiptFlow(); break;
+    case 'open-api-key': openApiKeyModal(); break;
+    case 'save-api-key': await saveApiKey(); break;
     case 'confirm-receipt-items': await confirmReceiptItems(); break;
 
     case 'open-add-expense': await openAddExpenseModal(); break;
@@ -1150,7 +1152,48 @@ document.addEventListener('click', (e) => {
 /* ============================================================
    RECEIPT SCAN FLOW
    ============================================================ */
+function openApiKeyModal() {
+  const existing = state.data.settings.anthropicApiKey || '';
+  openModal(`
+    <div class="modal-header">
+      <div class="modal-title">Anthropic API Key</div>
+      <button class="modal-close" data-action="close-modal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:#eef2ff;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:12.5px;color:#3730a3;line-height:1.6">
+        Receipt scanning uses <strong>Claude AI</strong> for accurate text recognition.
+        Cost is ~$0.01 per scan. Your key is stored locally on this device only.
+      </div>
+      <div class="form-group">
+        <label class="form-label">API Key <span class="req">*</span></label>
+        <input id="api-key-input" class="form-input" type="password"
+          value="${escHtml(existing)}" placeholder="sk-ant-...">
+        <div class="form-hint">Get your key at <strong>console.anthropic.com</strong> → API Keys → Create Key</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary" data-action="save-api-key">Save &amp; Scan</button>
+    </div>`);
+}
+
+async function saveApiKey() {
+  const key = document.getElementById('api-key-input').value.trim();
+  if (!key) { toast('API key is required', 'error'); return; }
+  state.data.settings.anthropicApiKey = key;
+  await persist();
+  closeModal();
+  toast('API key saved', 'success');
+  await runReceiptScan(key);
+}
+
 async function openScanReceiptFlow() {
+  const key = state.data.settings.anthropicApiKey;
+  if (!key) { openApiKeyModal(); return; }
+  await runReceiptScan(key);
+}
+
+async function runReceiptScan(apiKey) {
   const filePath = await window.api.openFileDialog();
   if (!filePath) return;
 
@@ -1160,10 +1203,10 @@ async function openScanReceiptFlow() {
     </div>
     <div class="modal-body scan-loading">
       <div class="spinner"></div>
-      <p>Reading text from your receipt.<br>This may take a few seconds.</p>
+      <p>Claude AI is reading your receipt.<br>This takes just a few seconds.</p>
     </div>`);
 
-  const result = await window.api.scanReceipt(filePath);
+  const result = await window.api.scanReceipt({ imagePath: filePath, apiKey });
 
   if (!result.ok) {
     openModal(`
@@ -1172,13 +1215,12 @@ async function openScanReceiptFlow() {
         <button class="modal-close" data-action="close-modal">✕</button>
       </div>
       <div class="modal-body">
-        <p style="color:var(--danger);font-size:13.5px;margin-bottom:12px">${escHtml(result.error)}</p>
-        <p style="font-size:12.5px;color:var(--text-muted)">
-          Tips: use a clear, well-lit photo taken straight-on with all text readable.
-        </p>
+        <p style="color:var(--danger);font-size:13.5px;margin-bottom:10px">${escHtml(result.error)}</p>
+        <p style="font-size:12.5px;color:var(--text-muted)">Make sure the image is clear and well-lit.</p>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" data-action="close-modal">Close</button>
+        <button class="btn btn-ghost" data-action="open-api-key">Update API Key</button>
         <button class="btn btn-primary" data-action="open-scan-receipt">Try Again</button>
       </div>`);
     return;
