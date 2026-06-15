@@ -1069,8 +1069,9 @@ document.addEventListener('click', async (e) => {
       await persist(); toast('Budget item deleted'); renderPage(); break;
 
     case 'open-scan-receipt': await openScanReceiptFlow(); break;
-    case 'open-api-key': openApiKeyModal(); break;
-    case 'save-api-key': await saveApiKey(); break;
+    case 'open-ollama-settings': await openOllamaSettingsModal(); break;
+    case 'save-ollama-model': saveOllamaModel(); break;
+    case 'open-ollama-site': await window.api.openExternal('https://ollama.com'); break;
     case 'confirm-receipt-items': await confirmReceiptItems(); break;
 
     case 'open-add-expense': await openAddExpenseModal(); break;
@@ -1149,51 +1150,135 @@ document.addEventListener('click', (e) => {
   swatch.classList.add('selected');
 });
 
+// Ollama model list selection
+document.addEventListener('click', (e) => {
+  const row = e.target.closest('.ollama-model-row');
+  if (!row || !row.dataset.modelId) return;
+  document.querySelectorAll('.ollama-model-row').forEach(r => {
+    r.classList.remove('selected');
+    r.querySelector('.ollama-model-check').textContent = '';
+  });
+  row.classList.add('selected');
+  row.querySelector('.ollama-model-check').textContent = '✓';
+  const input = document.getElementById('ollama-custom-model');
+  if (input) input.value = row.dataset.modelId;
+});
+
 /* ============================================================
    RECEIPT SCAN FLOW
    ============================================================ */
-function openApiKeyModal() {
-  const existing = state.data.settings.anthropicApiKey || '';
+const OLLAMA_MODELS = [
+  { id: 'llava',        label: 'LLaVA 7B',       size: '4.7 GB', desc: 'Best accuracy for receipts' },
+  { id: 'llava:13b',   label: 'LLaVA 13B',      size: '8.0 GB', desc: 'Higher accuracy, needs more RAM' },
+  { id: 'moondream',   label: 'Moondream 2',     size: '1.7 GB', desc: 'Fastest, smallest, decent accuracy' },
+  { id: 'minicpm-v',   label: 'MiniCPM-V',       size: '5.5 GB', desc: 'Excellent at reading text in images' },
+  { id: 'llava-llama3',label: 'LLaVA Llama 3',   size: '5.5 GB', desc: 'Strong instruction following' },
+];
+
+async function openOllamaSettingsModal() {
+  const current = state.data.settings.ollamaModel || 'llava';
+  const { running, models = [] } = await window.api.checkOllama();
+
+  const statusHtml = running
+    ? `<div class="ollama-status ok">✓ Ollama is running</div>`
+    : `<div class="ollama-status error">✗ Ollama is not running</div>`;
+
+  const modelRows = OLLAMA_MODELS.map(m => {
+    const installed = models.some(n => n === m.id || n.startsWith(m.id + ':'));
+    return `<div class="ollama-model-row${m.id === current ? ' selected' : ''}" data-model-id="${m.id}">
+      <div class="ollama-model-info">
+        <div class="ollama-model-name">${m.label}
+          ${installed ? '<span class="ollama-installed-tag">installed</span>' : ''}
+        </div>
+        <div class="ollama-model-desc">${m.desc} · ${m.size}</div>
+        ${!installed ? `<code class="ollama-pull-cmd">ollama pull ${m.id}</code>` : ''}
+      </div>
+      <div class="ollama-model-check">${m.id === current ? '✓' : ''}</div>
+    </div>`;
+  }).join('');
+
   openModal(`
     <div class="modal-header">
-      <div class="modal-title">Anthropic API Key</div>
+      <div class="modal-title">On-Device AI Settings</div>
       <button class="modal-close" data-action="close-modal">✕</button>
     </div>
     <div class="modal-body">
-      <div style="background:#eef2ff;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:12.5px;color:#3730a3;line-height:1.6">
-        Receipt scanning uses <strong>Claude AI</strong> for accurate text recognition.
-        Cost is ~$0.01 per scan. Your key is stored locally on this device only.
+      <div style="margin-bottom:16px">
+        ${statusHtml}
+        ${!running ? `<p style="font-size:12.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">
+          Ollama must be running to scan receipts. It runs silently in the background once installed.
+          <br><button class="btn btn-primary btn-sm" style="margin-top:8px" data-action="open-ollama-site">
+            Download Ollama (free)
+          </button>
+        </p>` : ''}
       </div>
+
       <div class="form-group">
-        <label class="form-label">API Key <span class="req">*</span></label>
-        <input id="api-key-input" class="form-input" type="password"
-          value="${escHtml(existing)}" placeholder="sk-ant-...">
-        <div class="form-hint">Get your key at <strong>console.anthropic.com</strong> → API Keys → Create Key</div>
+        <label class="form-label">Vision Model</label>
+        <div class="ollama-model-list" id="ollama-model-list">${modelRows}</div>
+        <div class="form-hint" style="margin-top:8px">
+          Click a model to select it. Run the shown command in a terminal to install it.
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Custom Model Name</label>
+        <input id="ollama-custom-model" class="form-input" value="${escHtml(current)}"
+          placeholder="e.g. llava, moondream, minicpm-v">
+        <div class="form-hint">Any Ollama vision model from ollama.com/library</div>
       </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" data-action="close-modal">Cancel</button>
-      <button class="btn btn-primary" data-action="save-api-key">Save &amp; Scan</button>
+      <button class="btn btn-primary" data-action="save-ollama-model">Save</button>
     </div>`);
 }
 
-async function saveApiKey() {
-  const key = document.getElementById('api-key-input').value.trim();
-  if (!key) { toast('API key is required', 'error'); return; }
-  state.data.settings.anthropicApiKey = key;
-  await persist();
+function saveOllamaModel() {
+  const val = document.getElementById('ollama-custom-model')?.value.trim();
+  if (!val) { toast('Model name is required', 'error'); return; }
+  state.data.settings.ollamaModel = val;
+  persist();
   closeModal();
-  toast('API key saved', 'success');
-  await runReceiptScan(key);
+  toast(`Model set to "${val}"`, 'success');
 }
 
 async function openScanReceiptFlow() {
-  const key = state.data.settings.anthropicApiKey;
-  if (!key) { openApiKeyModal(); return; }
-  await runReceiptScan(key);
-}
+  const ollama = await window.api.checkOllama();
+  if (!ollama.running) {
+    openModal(`
+      <div class="modal-header">
+        <div class="modal-title">Ollama Not Running</div>
+        <button class="modal-close" data-action="close-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:13.5px;color:var(--text);margin-bottom:14px;line-height:1.7">
+          Receipt scanning uses <strong>Ollama</strong> — a free, on-device AI that runs locally with no API key or internet needed.
+        </p>
+        <div class="ollama-setup-steps">
+          <div class="setup-step"><span class="step-num">1</span>
+            <div><strong>Install Ollama</strong><br>
+            <button class="btn btn-primary btn-sm" style="margin-top:6px" data-action="open-ollama-site">Download from ollama.com</button></div>
+          </div>
+          <div class="setup-step"><span class="step-num">2</span>
+            <div><strong>Pull a vision model</strong> (run in terminal)<br>
+            <code class="ollama-pull-cmd" style="margin-top:6px;display:inline-block">ollama pull llava</code>
+            <span style="color:var(--text-muted);font-size:12px;margin-left:8px">~4.7 GB</span></div>
+          </div>
+          <div class="setup-step"><span class="step-num">3</span>
+            <div><strong>Ollama starts automatically</strong> after install.<br>
+            <span style="font-size:12.5px;color:var(--text-muted)">Then come back and click Scan Receipt.</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-action="close-modal">Close</button>
+        <button class="btn btn-primary" data-action="open-scan-receipt">I have Ollama, retry</button>
+      </div>`);
+    return;
+  }
 
-async function runReceiptScan(apiKey) {
+  const model = state.data.settings.ollamaModel || 'llava';
   const filePath = await window.api.openFileDialog();
   if (!filePath) return;
 
@@ -1203,24 +1288,30 @@ async function runReceiptScan(apiKey) {
     </div>
     <div class="modal-body scan-loading">
       <div class="spinner"></div>
-      <p>Claude AI is reading your receipt.<br>This takes just a few seconds.</p>
+      <p>Running <strong>${escHtml(model)}</strong> on your device.<br>
+      First run may take longer while the model loads.</p>
     </div>`);
 
-  const result = await window.api.scanReceipt({ imagePath: filePath, apiKey });
+  const result = await window.api.scanReceipt({ imagePath: filePath, model });
 
   if (!result.ok) {
+    const isModelMissing = result.error === 'MODEL_NOT_FOUND';
     openModal(`
       <div class="modal-header">
         <div class="modal-title">Scan Failed</div>
         <button class="modal-close" data-action="close-modal">✕</button>
       </div>
       <div class="modal-body">
-        <p style="color:var(--danger);font-size:13.5px;margin-bottom:10px">${escHtml(result.error)}</p>
-        <p style="font-size:12.5px;color:var(--text-muted)">Make sure the image is clear and well-lit.</p>
+        ${isModelMissing
+          ? `<p style="font-size:13.5px;margin-bottom:10px">Model <strong>${escHtml(result.model)}</strong> is not installed.</p>
+             <p style="font-size:13px;color:var(--text-muted);margin-bottom:10px">Run this in a terminal to install it:</p>
+             <code class="ollama-pull-cmd" style="display:block">ollama pull ${escHtml(result.model || model)}</code>`
+          : `<p style="color:var(--danger);font-size:13.5px;margin-bottom:10px">${escHtml(result.error)}</p>
+             <p style="font-size:12.5px;color:var(--text-muted)">Make sure the image is clear and well-lit.</p>`}
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" data-action="close-modal">Close</button>
-        <button class="btn btn-ghost" data-action="open-api-key">Update API Key</button>
+        <button class="btn btn-ghost" data-action="open-ollama-settings">AI Settings</button>
         <button class="btn btn-primary" data-action="open-scan-receipt">Try Again</button>
       </div>`);
     return;

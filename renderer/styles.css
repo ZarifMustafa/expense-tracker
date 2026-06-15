@@ -670,6 +670,86 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .receipt-item-cat label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; display: block; margin-bottom: 5px; }
 
 /* ============================================================
+   OLLAMA SETTINGS
+   ============================================================ */
+.ollama-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 99px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.ollama-status.ok { background: var(--success-light); color: #166534; }
+.ollama-status.error { background: var(--danger-light); color: #991b1b; }
+
+.ollama-model-list { display: flex; flex-direction: column; gap: 6px; }
+
+.ollama-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+.ollama-model-row:hover { border-color: var(--accent); background: var(--accent-light); }
+.ollama-model-row.selected { border-color: var(--accent); background: var(--accent-light); }
+
+.ollama-model-name { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+.ollama-model-desc { font-size: 11.5px; color: var(--text-muted); }
+.ollama-model-check { font-size: 15px; color: var(--accent); font-weight: 700; min-width: 20px; text-align: right; }
+.ollama-installed-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--success-light);
+  color: #166534;
+  padding: 1px 6px;
+  border-radius: 99px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.ollama-pull-cmd {
+  display: inline-block;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  margin-top: 4px;
+  user-select: all;
+}
+
+.ollama-setup-steps { display: flex; flex-direction: column; gap: 14px; }
+.setup-step {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.step-num {
+  min-width: 26px;
+  height: 26px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+/* ============================================================
    TOAST
    ============================================================ */
 #toast-container {
