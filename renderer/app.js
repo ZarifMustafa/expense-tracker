@@ -1069,8 +1069,6 @@ document.addEventListener('click', async (e) => {
       await persist(); toast('Budget item deleted'); renderPage(); break;
 
     case 'open-scan-receipt': await openScanReceiptFlow(); break;
-    case 'save-api-key': await saveApiKey(); break;
-    case 'open-api-key': openApiKeyModal(false); break;
     case 'confirm-receipt-items': await confirmReceiptItems(); break;
 
     case 'open-add-expense': await openAddExpenseModal(); break;
@@ -1153,67 +1151,19 @@ document.addEventListener('click', (e) => {
    RECEIPT SCAN FLOW
    ============================================================ */
 async function openScanReceiptFlow() {
-  const apiKey = state.data.settings.anthropicApiKey;
-  if (!apiKey) {
-    openApiKeyModal();
-    return;
-  }
-  await startReceiptScan(apiKey);
-}
-
-function openApiKeyModal(pendingScan = false) {
-  const existing = state.data.settings.anthropicApiKey || '';
-  openModal(`
-    <div class="modal-header">
-      <div class="modal-title">Google AI Studio API Key</div>
-      <button class="modal-close" data-action="close-modal">✕</button>
-    </div>
-    <div class="modal-body">
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px;line-height:1.6">
-        Receipt scanning uses Google Gemini AI (free tier) to extract expenses from photos.
-        Enter your Google AI Studio API key to enable this feature.
-        Your key is stored locally on this device only.
-      </p>
-      <div class="form-group">
-        <label class="form-label">Google AI Studio API Key <span class="req">*</span></label>
-        <input id="api-key-input" class="form-input" type="password"
-          value="${escHtml(existing)}" placeholder="AIza...">
-        <div class="form-hint">⚠️ Must be from <strong>aistudio.google.com</strong> → Get API Key (NOT Google Cloud Console)</div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-secondary" data-action="close-modal">Cancel</button>
-      <button class="btn btn-primary" data-action="save-api-key" data-pending-scan="${pendingScan}">
-        Save &amp; ${pendingScan ? 'Scan Receipt' : 'Save'}
-      </button>
-    </div>`);
-}
-
-async function saveApiKey() {
-  const key = document.getElementById('api-key-input').value.trim();
-  if (!key) { toast('API key is required', 'error'); return; }
-  state.data.settings.anthropicApiKey = key;
-  await persist();
-  closeModal();
-  toast('API key saved', 'success');
-  await startReceiptScan(key);
-}
-
-async function startReceiptScan(apiKey) {
   const filePath = await window.api.openFileDialog();
   if (!filePath) return;
 
-  // Show loading modal
   openModal(`
     <div class="modal-header">
       <div class="modal-title">Scanning Receipt…</div>
     </div>
     <div class="modal-body scan-loading">
       <div class="spinner"></div>
-      <p>Reading your receipt with Claude AI.<br>This may take a few seconds.</p>
+      <p>Reading text from your receipt.<br>This may take a few seconds.</p>
     </div>`);
 
-  const result = await window.api.scanReceipt({ imagePath: filePath, apiKey });
+  const result = await window.api.scanReceipt(filePath);
 
   if (!result.ok) {
     openModal(`
@@ -1224,21 +1174,20 @@ async function startReceiptScan(apiKey) {
       <div class="modal-body">
         <p style="color:var(--danger);font-size:13.5px;margin-bottom:12px">${escHtml(result.error)}</p>
         <p style="font-size:12.5px;color:var(--text-muted)">
-          Make sure your API key is valid and the image clearly shows a receipt.
+          Tips: use a clear, well-lit photo taken straight-on with all text readable.
         </p>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" data-action="close-modal">Close</button>
-        <button class="btn btn-secondary" data-action="close-modal">Close</button>
-        <button class="btn btn-primary" data-action="open-api-key">Update API Key</button>
+        <button class="btn btn-primary" data-action="open-scan-receipt">Try Again</button>
       </div>`);
     return;
   }
 
-  openReceiptReviewModal(result.data, filePath);
+  openReceiptReviewModal(result.data);
 }
 
-async function openReceiptReviewModal(receipt, filePath) {
+async function openReceiptReviewModal(receipt) {
   const receiptDate = receipt.date || todayISO();
   const expDate = new Date(receiptDate);
   const expMonth = expDate.getMonth() + 1;

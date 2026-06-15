@@ -73,55 +73,82 @@ ipcMain.handle('open-file-dialog', async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
-ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
+ipcMain.handle('scan-receipt', async (_, { imagePath }) => {
   try {
-    const { GoogleGenAI } = require('@google/genai');
-    const imageBuffer = fs.readFileSync(imagePath);
-    const base64 = imageBuffer.toString('base64');
-    const ext = path.extname(imagePath).toLowerCase().slice(1);
-    const mimeType = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg'
-      : ext === 'png' ? 'image/png'
-      : ext === 'webp' ? 'image/webp'
-      : 'image/jpeg';
+    const { createWorker } = require('tesseract.js');
+    const worker = await createWorker('eng');
+    const { data: { text } } = await worker.recognize(imagePath);
+    await worker.terminate();
 
-    const ai = new GoogleGenAI({ apiKey });
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) throw new Error('No text found in image');
 
-    const prompt = `Analyze this receipt image and extract expense information. Return ONLY a JSON object, no other text:
-{
-  "merchant": "store name or null",
-  "date": "YYYY-MM-DD if visible or null",
-  "items": [
-    {"name": "item description", "amount": numeric_amount}
-  ],
-  "total": numeric_total_or_null
-}
-Rules: amounts are plain numbers only (no currency symbols or commas), names are concise. If individual items are not clearly visible, return one item using the total amount.`;
+    // Price pattern: a number like 150, 1,500, 150.00, 1500.00 at end of line
+    const priceRe = /([\d,]+\.?\d{0,2})\s*$/;
+    const skipRe = /\b(total|subtotal|sub-total|tax|vat|change|cash|card|payment|balance|discount|thank|receipt|invoice|bill|tel|phone|fax|www\.|http|address|date|time|order|table|server|cashier|welcome|visit|please|come again)\b/i;
+    const totalRe = /\b(grand\s*total|total|amount\s*due|net\s*total)\b/i;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash-lite',
-      contents: [{
-        parts: [
-          { text: prompt },
-          { inlineData: { mimeType, data: base64 } }
-        ]
-      }]
-    });
+    let merchant = null;
+    let receiptDate = null;
+    let total = null;
+    const items = [];
 
-    const text = response.text.trim();
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('Could not parse receipt data from image');
-    const data = JSON.parse(jsonMatch[0]);
-    if (!data.items || !data.items.length) throw new Error('No items found in receipt');
-    return { ok: true, data };
-  } catch (e) {
-    let error = e.message || String(e);
-    if (error.includes('429') || error.includes('quota') || error.includes('Too Many Requests') || error.includes('RESOURCE_EXHAUSTED')) {
-      error = 'Quota exceeded for your API key. Your free-tier limit may be exhausted for today. Try again tomorrow, or check https://ai.dev/rate-limit for your current usage.';
-    } else if (error.includes('401') || error.includes('403') || error.includes('API_KEY_INVALID') || error.includes('invalid API key')) {
-      error = 'Invalid API key. Get a free key from aistudio.google.com → Get API Key.';
-    } else if (error.includes('404')) {
-      error = 'Model not available for your API key. Make sure your key is from aistudio.google.com.';
+    // Merchant: first line that looks like a name (no digits, not a price line)
+    for (const line of lines.slice(0, 5)) {
+      if (!priceRe.test(line) && !/^\d/.test(line) && line.length > 2) {
+        merchant = line; break;
+      }
     }
-    return { ok: false, error };
+
+    // Date: look for common date patterns
+    const datePatterns = [
+      /(\d{4}[-/]\d{2}[-/]\d{2})/,
+      /(\d{2}[-/]\d{2}[-/]\d{4})/,
+      /(\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4})/i
+    ];
+    for (const line of lines) {
+      for (const dp of datePatterns) {
+        const m = line.match(dp);
+        if (m) {
+          const raw = m[1];
+          // Try to normalise to YYYY-MM-DD
+          const d = new Date(raw.replace(/(\d{2})[-/](\d{2})[-/](\d{4})/, '$3-$2-$1'));
+          if (!isNaN(d)) { receiptDate = d.toISOString().slice(0, 10); break; }
+          receiptDate = raw; break;
+        }
+      }
+      if (receiptDate) break;
+    }
+
+    // Extract line items and total
+    for (const line of lines) {
+      const priceMatch = line.match(priceRe);
+      if (!priceMatch) continue;
+
+      const amountStr = priceMatch[1].replace(/,/g, '');
+      const amount = parseFloat(amountStr);
+      if (!amount || amount <= 0) continue;
+
+      if (totalRe.test(line)) { total = amount; continue; }
+      if (skipRe.test(line)) continue;
+
+      // Name = everything before the price, cleaned up
+      let name = line.slice(0, line.lastIndexOf(priceMatch[0])).trim();
+      name = name.replace(/^[\d\s\-*.x]+/, '').replace(/\s{2,}/g, ' ').trim();
+      if (!name || name.length < 2) name = 'Item';
+
+      items.push({ name, amount });
+    }
+
+    // If nothing extracted but we found a total, create one item
+    if (!items.length && total) {
+      items.push({ name: merchant ? `${merchant} purchase` : 'Receipt total', amount: total });
+    }
+
+    if (!items.length) throw new Error('Could not extract any items from this receipt. Try a clearer photo with better lighting.');
+
+    return { ok: true, data: { merchant, date: receiptDate, items, total } };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
   }
 });
