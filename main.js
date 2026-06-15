@@ -85,7 +85,7 @@ ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
       : 'image/jpeg';
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
 
     const prompt = `Analyze this receipt image and extract expense information. Return ONLY a JSON object, no other text:
 {
@@ -110,6 +110,12 @@ Rules: amounts are plain numbers only (no currency symbols or commas), item name
     if (!data.items || !data.items.length) throw new Error('No items found in receipt');
     return { ok: true, data };
   } catch (e) {
-    return { ok: false, error: e.message };
+    let error = e.message;
+    if (error.includes('429') || error.includes('quota') || error.includes('Too Many Requests')) {
+      error = 'Quota exceeded. Make sure you are using an API key from aistudio.google.com (not Google Cloud Console). AI Studio keys have a free tier. If you already have one, wait a minute and try again.';
+    } else if (error.includes('400') || error.includes('API_KEY_INVALID') || error.includes('invalid')) {
+      error = 'Invalid API key. Get a free key from aistudio.google.com → Get API Key.';
+    }
+    return { ok: false, error };
   }
 });

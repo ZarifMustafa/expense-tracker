@@ -1178,7 +1178,7 @@ function openApiKeyModal(pendingScan = false) {
         <label class="form-label">Google AI Studio API Key <span class="req">*</span></label>
         <input id="api-key-input" class="form-input" type="password"
           value="${escHtml(existing)}" placeholder="AIza...">
-        <div class="form-hint">Get a free key at aistudio.google.com → Get API Key</div>
+        <div class="form-hint">⚠️ Must be from <strong>aistudio.google.com</strong> → Get API Key (NOT Google Cloud Console)</div>
       </div>
     </div>
     <div class="modal-footer">
