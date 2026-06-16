@@ -41,10 +41,7 @@ function createWindow() {
     show: false
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
-    mainWindow.webContents.openDevTools(); // remove after debugging
-  });
+  mainWindow.once('ready-to-show', () => mainWindow.show());
 }
 
 app.whenReady().then(createWindow);
@@ -68,70 +65,57 @@ ipcMain.handle('open-file-dialog', async () => {
 });
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url));
 
-// Check if Ollama is running and return available models
-ipcMain.handle('check-ollama', async () => {
-  try {
-    const { net } = require('electron');
-    const res = await net.fetch('http://localhost:11434/api/tags');
-    if (!res.ok) return { running: false, models: [] };
-    const data = await res.json();
-    const models = (data.models || []).map(m => m.name);
-    return { running: true, models };
-  } catch (e) {
-    return { running: false, models: [], error: e.message };
-  }
-});
-
-// Scan receipt using Ollama vision model
-ipcMain.handle('scan-receipt', async (_, { imagePath, model }) => {
+// Scan receipt using Claude API (claude-haiku-4-5)
+ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
   try {
     const { net } = require('electron');
     const imageBuffer = fs.readFileSync(imagePath);
     const base64 = imageBuffer.toString('base64');
+    const ext = imagePath.split('.').pop().toLowerCase();
+    const mediaType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
 
-    const prompt = `You are an expert receipt scanner. Study this receipt image very carefully and read every single printed character.
+    const prompt = `Look at this receipt image and extract every line item.
 
-Step 1 — Read the receipt top to bottom and identify:
-- The date (convert DD-MM-YYYY or MM/DD/YYYY to YYYY-MM-DD)
-- Every individual line item with its exact name and price
-- The final total amount
+Return ONLY a raw JSON object — no markdown, no backticks, no explanation:
+{"merchant":"store name or empty string","date":"YYYY-MM-DD or empty string","items":[{"name":"item name","amount":0.00}],"total":0.00}
 
-Step 2 — Output ONLY this JSON (no markdown, no backticks, no explanation):
-{"merchant":"","date":"YYYY-MM-DD","items":[{"name":"","amount":0.00}],"total":0.00}
+Rules:
+- List EVERY individual product/item line separately with its exact printed name and price
+- amounts are plain decimals (e.g. 48.00, 6.50)
+- total = the grand total on the receipt
+- Exclude: tax, vat, subtotal, balance, change, payment method lines
+- date format: YYYY-MM-DD (e.g. 01-01-2018 becomes "2018-01-01")`;
 
-CRITICAL number-reading rules:
-- Read EVERY digit carefully: 48.00 is NOT 8.00 or 8.5, distinguish 1/7, 0/8, 3/8, 4/9
-- amounts must be exact decimals with two decimal places (6.50 not 6.5)
-- Include ALL line items — a typical receipt has 5-15 items, list every one
-- total = the grand total line (e.g. "Total 84.80" → 84.80), NOT subtotal
-- Skip only: tax, vat, subtotal, balance, change, card/cash payment lines
-- Keep item names short and exact as printed`;
-
-
-    const res = await net.fetch('http://localhost:11434/api/generate', {
+    const res = await net.fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
       body: JSON.stringify({
-        model,
-        prompt,
-        images: [base64],
-        stream: false,
-        options: { temperature: 0.1, num_predict: 1024 }
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1024,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+            { type: 'text', text: prompt }
+          ]
+        }]
       })
     });
 
     if (!res.ok) {
-      const txt = await res.text();
-      if (txt.toLowerCase().includes('not found') || txt.toLowerCase().includes('pull')) {
-        return { ok: false, error: 'MODEL_NOT_FOUND', model };
-      }
-      throw new Error(txt);
+      const err = await res.json().catch(() => ({}));
+      if (res.status === 401) return { ok: false, error: 'INVALID_KEY' };
+      throw new Error(err.error?.message || `API error ${res.status}`);
     }
 
     const data = await res.json();
-    const text = (data.response || '').trim();
+    const text = (data.content?.[0]?.text || '').trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('Model did not return valid JSON. Try again or use a different model.');
+    if (!jsonMatch) throw new Error('Could not parse receipt data. Please try again.');
     const parsed = JSON.parse(jsonMatch[0]);
     if (!parsed.items?.length) throw new Error('No items could be extracted from this receipt.');
     return { ok: true, data: parsed };
