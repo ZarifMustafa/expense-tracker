@@ -1004,6 +1004,7 @@ async function saveWishToBudget(wishId) {
    EVENT DELEGATION
    ============================================================ */
 document.addEventListener('click', async (e) => {
+  try {
   // Badge selector click
   const badge = e.target.closest('.selectable-badge');
   if (badge && badge.dataset.selector) {
@@ -1109,6 +1110,10 @@ document.addEventListener('click', async (e) => {
       });
       break;
     }
+  }
+  } catch (err) {
+    console.error('Click handler error:', err);
+    toast('Error: ' + err.message, 'error');
   }
 });
 
@@ -1244,7 +1249,13 @@ function saveOllamaModel() {
 }
 
 async function openScanReceiptFlow() {
-  const ollama = await window.api.checkOllama();
+  let ollama;
+  try {
+    ollama = await window.api.checkOllama();
+  } catch (err) {
+    toast('checkOllama error: ' + err.message, 'error');
+    return;
+  }
   if (!ollama.running) {
     openModal(`
       <div class="modal-header">

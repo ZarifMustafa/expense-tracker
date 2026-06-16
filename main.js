@@ -41,7 +41,10 @@ function createWindow() {
     show: false
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+    mainWindow.webContents.openDevTools(); // remove after debugging
+  });
 }
 
 app.whenReady().then(createWindow);
