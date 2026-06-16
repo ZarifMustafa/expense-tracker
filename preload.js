@@ -7,5 +7,6 @@ contextBridge.exposeInMainWorld('api', {
   openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   scanReceipt: (args) => ipcRenderer.invoke('scan-receipt', args),
+  transcribeVoice: (args) => ipcRenderer.invoke('transcribe-voice', args),
   parseVoice: (args) => ipcRenderer.invoke('parse-voice', args)
 });

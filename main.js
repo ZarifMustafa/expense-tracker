@@ -94,6 +94,36 @@ function svgToPng(svgPath) {
 }
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url));
 
+// Transcribe audio using Groq Whisper (free)
+ipcMain.handle('transcribe-voice', async (_, { audioData, apiKey }) => {
+  try {
+    const { net } = require('electron');
+    const audioBuffer = Buffer.from(audioData);
+    const boundary = 'VoiceBoundary' + Date.now().toString(36);
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.webm"\r\nContent-Type: audio/webm\r\n\r\n`),
+      audioBuffer,
+      Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-large-v3-turbo\r\n--${boundary}--\r\n`)
+    ]);
+    const res = await net.fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      body
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (res.status === 401) return { ok: false, error: 'INVALID_KEY' };
+      throw new Error(err.error?.message || `API error ${res.status}`);
+    }
+    const data = await res.json();
+    const transcript = (data.text || '').trim();
+    if (!transcript) return { ok: false, error: 'No speech detected in the recording.' };
+    return { ok: true, transcript };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
 // Parse voice transcript into expenses using Groq
 ipcMain.handle('parse-voice', async (_, { transcript, apiKey }) => {
   try {

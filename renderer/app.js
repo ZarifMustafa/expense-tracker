@@ -1054,7 +1054,7 @@ document.addEventListener('click', async (e) => {
   const id = el.dataset.id;
 
   switch (action) {
-    case 'close-modal': closeModal(); break;
+    case 'close-modal': stopVoiceRecording(); closeModal(); break;
 
     case 'budget-prev-month':
       state.budgetMonth--;
@@ -1075,7 +1075,7 @@ document.addEventListener('click', async (e) => {
 
     case 'open-scan-receipt': await openScanReceiptFlow(); break;
     case 'open-voice-expense': openVoiceExpenseFlow(); break;
-    case 'stop-voice': stopVoiceRecording(); break;
+    case 'toggle-voice': await toggleVoiceRecording(); break;
     case 'open-ollama-settings': openAISettingsModal(); break;
     case 'save-ai-settings': saveAISettings(); break;
     case 'open-anthropic-console': await window.api.openExternal('https://console.groq.com/keys'); break;
@@ -1403,12 +1403,16 @@ window.toggleReceiptRow = function(i) {
 /* ============================================================
    VOICE EXPENSE FLOW
    ============================================================ */
-let _voiceRecognition = null;
+let _mediaRecorder = null;
+let _audioChunks = [];
+let _recordingTimer = null;
+let _recordingSeconds = 0;
 
 function stopVoiceRecording() {
-  if (_voiceRecognition) {
-    _voiceRecognition.stop();
+  if (_mediaRecorder && _mediaRecorder.state === 'recording') {
+    _mediaRecorder.stop();
   }
+  if (_recordingTimer) { clearInterval(_recordingTimer); _recordingTimer = null; }
 }
 
 function openVoiceExpenseFlow() {
@@ -1441,23 +1445,17 @@ function openVoiceExpenseFlow() {
     return;
   }
 
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    toast('Speech recognition is not available', 'error');
-    return;
-  }
-
   openModal(`
     <div class="modal-header">
       <div class="modal-title">Voice Expense Entry</div>
       <button class="modal-close" data-action="close-modal">✕</button>
     </div>
     <div class="modal-body voice-modal-body">
-      <p class="voice-prompt">Tell me what you spent — say amounts, names, and optionally a date.</p>
+      <p class="voice-prompt">Tap the mic, speak your expenses, then tap again to stop.</p>
       <div id="voice-transcript" class="voice-transcript">
-        <span class="voice-placeholder">e.g. "I spent 500 taka on lunch and 200 on transport"</span>
+        <span class="voice-placeholder">e.g. "500 taka on lunch, 200 on transport, 1200 on groceries"</span>
       </div>
-      <button id="voice-btn" class="voice-mic-btn" data-action="stop-voice" title="Tap to stop">
+      <button id="voice-btn" class="voice-mic-btn" data-action="toggle-voice">
         <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
           <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
@@ -1465,67 +1463,68 @@ function openVoiceExpenseFlow() {
           <line x1="8" y1="23" x2="16" y2="23"/>
         </svg>
       </button>
-      <div id="voice-status" class="voice-status">Listening… tap mic to stop</div>
+      <div id="voice-status" class="voice-status">Tap mic to start recording</div>
     </div>`);
+}
 
-  const recognition = new SpeechRecognition();
-  _voiceRecognition = recognition;
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.lang = 'en-US';
+async function toggleVoiceRecording() {
+  if (_mediaRecorder && _mediaRecorder.state === 'recording') {
+    stopVoiceRecording();
+    return;
+  }
 
-  let finalTranscript = '';
+  const apiKey = state.data.settings.groqApiKey || '';
+  const btn = document.getElementById('voice-btn');
+  const statusEl = document.getElementById('voice-status');
 
-  recognition.onresult = (event) => {
-    let interim = '';
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      if (event.results[i].isFinal) {
-        finalTranscript += event.results[i][0].transcript + ' ';
-      } else {
-        interim += event.results[i][0].transcript;
-      }
-    }
-    const el = document.getElementById('voice-transcript');
-    if (el) {
-      el.innerHTML = finalTranscript
-        ? `<span class="voice-final">${escHtml(finalTranscript)}</span><span class="voice-interim">${escHtml(interim)}</span>`
-        : `<span class="voice-interim">${escHtml(interim)}</span><span class="voice-placeholder">${interim ? '' : 'e.g. "I spent 500 taka on lunch and 200 on transport"'}</span>`;
-    }
-  };
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    toast(err.name === 'NotAllowedError' ? 'Microphone access denied' : 'Could not access microphone: ' + err.message, 'error');
+    return;
+  }
 
-  recognition.onerror = (e) => {
-    _voiceRecognition = null;
-    if (e.error === 'no-speech') return;
-    toast('Microphone error: ' + e.error, 'error');
-  };
+  _audioChunks = [];
+  _mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
-  recognition.onend = async () => {
-    _voiceRecognition = null;
-    const transcript = finalTranscript.trim();
-    if (!transcript) {
-      const statusEl = document.getElementById('voice-status');
-      if (statusEl) statusEl.textContent = 'No speech detected. Please try again.';
-      const btn = document.getElementById('voice-btn');
-      if (btn) btn.classList.remove('recording');
+  _mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) _audioChunks.push(e.data); };
+
+  _mediaRecorder.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    clearInterval(_recordingTimer);
+    _recordingTimer = null;
+
+    if (btn) { btn.classList.remove('recording'); btn.disabled = true; }
+    if (statusEl) statusEl.textContent = 'Transcribing…';
+
+    const blob = new Blob(_audioChunks, { type: 'audio/webm' });
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioData = Array.from(new Uint8Array(arrayBuffer));
+
+    const transcribeResult = await window.api.transcribeVoice({ audioData, apiKey });
+    if (!transcribeResult.ok) {
+      toast('Transcription failed: ' + transcribeResult.error, 'error');
+      if (btn) btn.disabled = false;
+      if (statusEl) statusEl.textContent = 'Tap mic to try again';
       return;
     }
 
-    const statusEl = document.getElementById('voice-status');
+    const transcript = transcribeResult.transcript;
+    const transcriptEl = document.getElementById('voice-transcript');
+    if (transcriptEl) transcriptEl.innerHTML = `<span class="voice-final">${escHtml(transcript)}</span>`;
     if (statusEl) statusEl.textContent = 'Analyzing…';
-    const btn = document.getElementById('voice-btn');
-    if (btn) { btn.classList.remove('recording'); btn.disabled = true; }
 
-    const result = await window.api.parseVoice({ transcript, apiKey });
-
-    if (!result.ok) {
+    const parseResult = await window.api.parseVoice({ transcript, apiKey });
+    if (!parseResult.ok) {
       openModal(`
         <div class="modal-header">
           <div class="modal-title">Could Not Parse</div>
           <button class="modal-close" data-action="close-modal">✕</button>
         </div>
         <div class="modal-body">
-          <p style="color:var(--danger);font-size:13.5px;margin-bottom:8px">${escHtml(result.error)}</p>
-          <p style="font-size:12.5px;color:var(--text-muted)">Try speaking more clearly, e.g. "500 taka on groceries and 200 on transport".</p>
+          <p style="color:var(--danger);font-size:13.5px;margin-bottom:8px">${escHtml(parseResult.error)}</p>
+          <p style="font-size:12.5px;color:var(--text-muted)">Try again and speak clearly, e.g. "500 taka on groceries and 200 on transport".</p>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" data-action="close-modal">Close</button>
@@ -1533,13 +1532,21 @@ function openVoiceExpenseFlow() {
         </div>`);
       return;
     }
-
-    openReceiptReviewModal(result.data);
+    openReceiptReviewModal(parseResult.data);
   };
 
-  recognition.start();
-  const btn = document.getElementById('voice-btn');
+  _mediaRecorder.start(100);
   if (btn) btn.classList.add('recording');
+
+  _recordingSeconds = 0;
+  _recordingTimer = setInterval(() => {
+    _recordingSeconds++;
+    const m = Math.floor(_recordingSeconds / 60);
+    const s = String(_recordingSeconds % 60).padStart(2, '0');
+    const el = document.getElementById('voice-status');
+    if (el) el.textContent = `Recording ${m}:${s} — tap mic to stop`;
+  }, 1000);
+  if (statusEl) statusEl.textContent = 'Recording 0:00 — tap mic to stop';
 }
 
 /* ============================================================
