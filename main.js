@@ -89,20 +89,19 @@ ipcMain.handle('scan-receipt', async (_, { imagePath, model }) => {
     const imageBuffer = fs.readFileSync(imagePath);
     const base64 = imageBuffer.toString('base64');
 
-    const prompt = `You are analyzing a receipt image. Extract all purchased items and return ONLY a valid JSON object — no explanation, no markdown, just JSON:
-{
-  "merchant": "store name or null",
-  "date": "YYYY-MM-DD if visible or null",
-  "items": [
-    {"name": "item description", "amount": 0.00}
-  ],
-  "total": 0.00
-}
-Rules:
-- amounts are plain decimal numbers (no currency symbols)
-- only include actual purchased line items
-- exclude: tax, vat, subtotal, total, balance, change, payment, discount lines
-- if individual items are unclear, create one entry with the grand total amount`;
+    const prompt = `Look at this receipt image carefully. Read every single line item printed on it.
+
+Return ONLY a raw JSON object with no markdown, no explanation, no code fences — just the JSON:
+{"merchant":"store name or empty string","date":"YYYY-MM-DD or empty string","items":[{"name":"exact item name from receipt","amount":0.00}],"total":0.00}
+
+STRICT RULES:
+1. List EVERY individual product/item line separately — do not merge or skip any
+2. Copy the item name exactly as printed (e.g. "Lorem", "Ipsum", "Dolor Sit", "Amet")
+3. amount must be a plain decimal number matching the price on that line
+4. total = the grand total printed on the receipt (e.g. 84.80)
+5. DO NOT include tax, vat, subtotal, balance, change, or payment method lines in items[]
+6. date format must be YYYY-MM-DD (e.g. "2018-01-01" for 01-01-2018)
+7. Output nothing except the JSON — no "Here is", no backticks, no extra text`;
 
     const res = await net.fetch('http://localhost:11434/api/generate', {
       method: 'POST',
@@ -112,7 +111,7 @@ Rules:
         prompt,
         images: [base64],
         stream: false,
-        options: { temperature: 0.1, num_predict: 512 }
+        options: { temperature: 0.1, num_predict: 1024 }
       })
     });
 
