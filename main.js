@@ -65,17 +65,58 @@ ipcMain.handle('open-file-dialog', async () => {
 });
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url));
 
+// Helper: HTTP GET returning parsed JSON
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    const http = require('http');
+    const req = http.get(url, (res) => {
+      let body = '';
+      res.on('data', c => body += c);
+      res.on('end', () => {
+        try { resolve({ ok: res.statusCode < 400, status: res.statusCode, data: JSON.parse(body) }); }
+        catch { resolve({ ok: res.statusCode < 400, status: res.statusCode, data: body }); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(4000, () => { req.destroy(); reject(new Error('timeout')); });
+  });
+}
+
+// Helper: HTTP POST returning parsed JSON
+function httpPost(url, payload) {
+  return new Promise((resolve, reject) => {
+    const http = require('http');
+    const body = JSON.stringify(payload);
+    const u = new URL(url);
+    const req = http.request({
+      hostname: u.hostname,
+      port: u.port || 11434,
+      path: u.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try { resolve({ ok: res.statusCode < 400, status: res.statusCode, data: JSON.parse(data) }); }
+        catch { resolve({ ok: res.statusCode < 400, status: res.statusCode, data }); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(120000, () => { req.destroy(); reject(new Error('Request timed out after 120s')); });
+    req.write(body);
+    req.end();
+  });
+}
+
 // Check if Ollama is running and return available models
 ipcMain.handle('check-ollama', async () => {
   try {
-    const res = await fetch('http://localhost:11434/api/tags',
-      { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) return { running: false };
-    const data = await res.json();
-    const models = (data.models || []).map(m => m.name);
+    const res = await httpGet('http://localhost:11434/api/tags');
+    const models = (res.data?.models || []).map(m => m.name);
     return { running: true, models };
   } catch {
-    return { running: false };
+    return { running: false, models: [] };
   }
 });
 
@@ -100,29 +141,23 @@ Rules:
 - exclude: tax, vat, subtotal, total, balance, change, payment, discount lines
 - if individual items are unclear, create one entry with the grand total amount`;
 
-    const res = await fetch('http://localhost:11434/api/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        prompt,
-        images: [base64],
-        stream: false,
-        options: { temperature: 0.1, num_predict: 512 }
-      }),
-      signal: AbortSignal.timeout(120000)
+    const res = await httpPost('http://localhost:11434/api/generate', {
+      model,
+      prompt,
+      images: [base64],
+      stream: false,
+      options: { temperature: 0.1, num_predict: 512 }
     });
 
     if (!res.ok) {
-      const txt = await res.text();
+      const txt = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
       if (txt.toLowerCase().includes('not found') || txt.toLowerCase().includes('pull')) {
-        return { ok: false, error: `MODEL_NOT_FOUND`, model };
+        return { ok: false, error: 'MODEL_NOT_FOUND', model };
       }
       throw new Error(txt);
     }
 
-    const data = await res.json();
-    const text = (data.response || '').trim();
+    const text = (res.data?.response || '').trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Model did not return valid JSON. Try again or use a different model.');
     const parsed = JSON.parse(jsonMatch[0]);
