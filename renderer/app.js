@@ -1407,12 +1407,14 @@ let _mediaRecorder = null;
 let _audioChunks = [];
 let _recordingTimer = null;
 let _recordingSeconds = 0;
+let _liveTranscriptInterval = null;
 
 function stopVoiceRecording() {
   if (_mediaRecorder && _mediaRecorder.state === 'recording') {
     _mediaRecorder.stop();
   }
   if (_recordingTimer) { clearInterval(_recordingTimer); _recordingTimer = null; }
+  if (_liveTranscriptInterval) { clearInterval(_liveTranscriptInterval); _liveTranscriptInterval = null; }
 }
 
 function openVoiceExpenseFlow() {
@@ -1547,6 +1549,21 @@ async function toggleVoiceRecording() {
     if (el) el.textContent = `Recording ${m}:${s} — tap mic to stop`;
   }, 1000);
   if (statusEl) statusEl.textContent = 'Recording 0:00 — tap mic to stop';
+
+  // Live transcription: send accumulated audio to Whisper every 4 seconds
+  _liveTranscriptInterval = setInterval(async () => {
+    if (_audioChunks.length < 5) return;
+    try {
+      const blob = new Blob([..._audioChunks], { type: 'audio/webm' });
+      const arrayBuffer = await blob.arrayBuffer();
+      const audioData = Array.from(new Uint8Array(arrayBuffer));
+      const result = await window.api.transcribeVoice({ audioData, apiKey });
+      if (result.ok && result.transcript) {
+        const el = document.getElementById('voice-transcript');
+        if (el) el.innerHTML = `<span class="voice-final">${escHtml(result.transcript)}</span><span class="voice-cursor">▌</span>`;
+      }
+    } catch (_) {}
+  }, 4000);
 }
 
 /* ============================================================
