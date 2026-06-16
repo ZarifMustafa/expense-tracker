@@ -86,9 +86,13 @@ function getWishSpent(wishItemId) {
     .reduce((s, e) => s + (e.actualCost || 0), 0);
 }
 
-function getBudgetActual(budgetItemId) {
-  return state.data.expenses.filter(e => e.budgetItemId === budgetItemId)
-    .reduce((s, e) => s + (e.actualCost || 0), 0);
+function getBudgetActual(budgetItemId, month, year) {
+  return state.data.expenses.filter(e => {
+    if (e.budgetItemId !== budgetItemId) return false;
+    if (!month) return true;
+    const d = new Date(e.date);
+    return (d.getMonth() + 1) === month && d.getFullYear() === year;
+  }).reduce((s, e) => s + (e.actualCost || 0), 0);
 }
 
 function getWishItem(id) { return state.data.wishItems.find(w => w.id === id); }
@@ -214,7 +218,7 @@ function renderBudget() {
   const totalEst = items.reduce((s, i) => s + (i.estimatedCost || 0), 0);
   let totalActual = 0;
   const itemsWithActual = items.map(item => {
-    const actual = getBudgetActual(item.id);
+    const actual = getBudgetActual(item.id, m, y);
     totalActual += actual;
     return { ...item, actual };
   });
@@ -322,7 +326,7 @@ function renderAnalysis() {
   const { mo, yr } = monthYearOptions(m, y);
 
   const tableRows = items.map(item => {
-    const actual = getBudgetActual(item.id);
+    const actual = getBudgetActual(item.id, m, y);
     const d = (item.estimatedCost || 0) - actual;
     return `<tr>
       <td>${colorBadge(item.name, item.color)}</td>
@@ -382,7 +386,7 @@ function initCharts() {
     if (!canvas) return;
     if (analysisChartInstance) { analysisChartInstance.destroy(); analysisChartInstance = null; }
     const { analysisMonth: m, analysisYear: y } = state;
-    const items = getBudgetItems(m, y).filter(i => !i.isSystem || getBudgetActual(i.id) > 0);
+    const items = getBudgetItems(m, y).filter(i => !i.isSystem || getBudgetActual(i.id, m, y) > 0);
     if (!items.length) {
       const ctx = canvas.getContext('2d');
       ctx.fillStyle = '#94a3b8'; ctx.font = '14px sans-serif'; ctx.textAlign = 'center';
@@ -397,9 +401,9 @@ function initCharts() {
           { label: 'Budgeted', data: items.map(i => i.estimatedCost || 0),
             backgroundColor: 'rgba(99,102,241,.25)', borderColor: 'rgba(99,102,241,1)',
             borderWidth: 1.5, borderRadius: 4 },
-          { label: 'Actual', data: items.map(i => getBudgetActual(i.id)),
-            backgroundColor: items.map(i => getBudgetActual(i.id) > (i.estimatedCost||0) ? 'rgba(239,68,68,.7)' : 'rgba(34,197,94,.7)'),
-            borderColor: items.map(i => getBudgetActual(i.id) > (i.estimatedCost||0) ? '#ef4444' : '#22c55e'),
+          { label: 'Actual', data: items.map(i => getBudgetActual(i.id, m, y)),
+            backgroundColor: items.map(i => getBudgetActual(i.id, m, y) > (i.estimatedCost||0) ? 'rgba(239,68,68,.7)' : 'rgba(34,197,94,.7)'),
+            borderColor: items.map(i => getBudgetActual(i.id, m, y) > (i.estimatedCost||0) ? '#ef4444' : '#22c55e'),
             borderWidth: 1.5, borderRadius: 4 }
         ]
       },
@@ -1382,7 +1386,9 @@ async function confirmReceiptItems() {
   await persist();
   closeModal();
   toast(`${added} expense${added !== 1 ? 's' : ''} added from receipt`, 'success');
-  renderPage();
+  state.budgetMonth = expMonth;
+  state.budgetYear = expYear;
+  navigate('budget');
 }
 
 // Called by inline onchange on receipt rows
