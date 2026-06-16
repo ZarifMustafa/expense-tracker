@@ -1072,7 +1072,7 @@ document.addEventListener('click', async (e) => {
     case 'open-scan-receipt': await openScanReceiptFlow(); break;
     case 'open-ollama-settings': openAISettingsModal(); break;
     case 'save-ai-settings': saveAISettings(); break;
-    case 'open-anthropic-console': await window.api.openExternal('https://aistudio.google.com/app/apikey'); break;
+    case 'open-anthropic-console': await window.api.openExternal('https://console.groq.com/keys'); break;
     case 'confirm-receipt-items': await confirmReceiptItems(); break;
 
     case 'open-add-expense': await openAddExpenseModal(); break;
@@ -1173,7 +1173,7 @@ document.addEventListener('click', (e) => {
    RECEIPT SCAN FLOW
    ============================================================ */
 function openAISettingsModal() {
-  const current = state.data.settings.geminiApiKey || '';
+  const current = state.data.settings.groqApiKey || '';
   openModal(`
     <div class="modal-header">
       <div class="modal-title">AI Settings</div>
@@ -1181,12 +1181,12 @@ function openAISettingsModal() {
     </div>
     <div class="modal-body">
       <div class="form-group">
-        <label class="form-label">Google Gemini API Key</label>
-        <input id="gemini-api-key" class="form-input" type="password"
-          value="${escHtml(current)}" placeholder="AIza…" autocomplete="off">
+        <label class="form-label">Groq API Key</label>
+        <input id="groq-api-key" class="form-input" type="password"
+          value="${escHtml(current)}" placeholder="gsk_…" autocomplete="off">
         <div class="form-hint">
-          Free tier: 1,500 receipt scans/day. No credit card needed.
-          <br><a class="form-hint-link" data-action="open-anthropic-console">Get free key at aistudio.google.com →</a>
+          100% free, no credit card needed. Powered by Llama 3.2 Vision.
+          <br><a class="form-hint-link" data-action="open-anthropic-console">Get free key at console.groq.com →</a>
         </div>
       </div>
     </div>
@@ -1197,16 +1197,16 @@ function openAISettingsModal() {
 }
 
 function saveAISettings() {
-  const val = document.getElementById('gemini-api-key')?.value.trim();
+  const val = document.getElementById('groq-api-key')?.value.trim();
   if (!val) { toast('API key is required', 'error'); return; }
-  state.data.settings.geminiApiKey = val;
+  state.data.settings.groqApiKey = val;
   persist();
   closeModal();
   toast('API key saved', 'success');
 }
 
 async function openScanReceiptFlow() {
-  const apiKey = state.data.settings.geminiApiKey || '';
+  const apiKey = state.data.settings.groqApiKey || '';
   if (!apiKey) {
     openModal(`
       <div class="modal-header">
@@ -1215,14 +1215,13 @@ async function openScanReceiptFlow() {
       </div>
       <div class="modal-body">
         <p style="font-size:13.5px;color:var(--text);margin-bottom:14px;line-height:1.7">
-          Receipt scanning uses <strong>Google Gemini</strong> (free tier, 1,500 scans/day).
-          A free API key from Google AI Studio is required.
+          Receipt scanning uses <strong>Groq AI</strong> — completely free, no credit card needed.
         </p>
         <div class="ollama-setup-steps">
           <div class="setup-step"><span class="step-num">1</span>
             <div><strong>Get an API key</strong><br>
             <button class="btn btn-primary btn-sm" style="margin-top:6px" data-action="open-anthropic-console">
-              Open console.anthropic.com
+              Open console.groq.com
             </button></div>
           </div>
           <div class="setup-step"><span class="step-num">2</span>
@@ -1247,7 +1246,7 @@ async function openScanReceiptFlow() {
     </div>
     <div class="modal-body scan-loading">
       <div class="spinner"></div>
-      <p>Analyzing with <strong>Gemini</strong>…</p>
+      <p>Analyzing with <strong>Groq</strong>…</p>
     </div>`);
 
   const result = await window.api.scanReceipt({ imagePath: filePath, apiKey });

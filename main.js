@@ -65,7 +65,7 @@ ipcMain.handle('open-file-dialog', async () => {
 });
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url));
 
-// Scan receipt using Gemini API (free tier — 1500 req/day)
+// Scan receipt using Groq API (free, no credit card — llama-3.2-11b-vision)
 ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
   try {
     const { net } = require('electron');
@@ -86,32 +86,34 @@ Rules:
 - Exclude: tax, vat, subtotal, balance, change, payment method lines
 - date format: YYYY-MM-DD (e.g. 01-01-2018 becomes "2018-01-01")`;
 
-    const res = await net.fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { inlineData: { mimeType, data: base64 } },
-              { text: prompt }
-            ]
-          }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 1024 }
-        })
-      }
-    );
+    const res = await net.fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'llama-3.2-11b-vision-preview',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
+            { type: 'text', text: prompt }
+          ]
+        }],
+        temperature: 0.1,
+        max_tokens: 1024
+      })
+    });
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      if (res.status === 400 && err.error?.message?.includes('API_KEY')) return { ok: false, error: 'INVALID_KEY' };
-      if (res.status === 403) return { ok: false, error: 'INVALID_KEY' };
+      if (res.status === 401) return { ok: false, error: 'INVALID_KEY' };
       throw new Error(err.error?.message || `API error ${res.status}`);
     }
 
     const data = await res.json();
-    const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+    const text = (data.choices?.[0]?.message?.content || '').trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Could not parse receipt data. Please try again.');
     const parsed = JSON.parse(jsonMatch[0]);
