@@ -1173,11 +1173,11 @@ document.addEventListener('click', (e) => {
    RECEIPT SCAN FLOW
    ============================================================ */
 const OLLAMA_MODELS = [
-  { id: 'llava',        label: 'LLaVA 7B',       size: '4.7 GB', desc: 'Best accuracy for receipts' },
-  { id: 'llava:13b',   label: 'LLaVA 13B',      size: '8.0 GB', desc: 'Higher accuracy, needs more RAM' },
-  { id: 'moondream',   label: 'Moondream 2',     size: '1.7 GB', desc: 'Fastest, smallest, decent accuracy' },
-  { id: 'minicpm-v',   label: 'MiniCPM-V',       size: '5.5 GB', desc: 'Excellent at reading text in images' },
-  { id: 'llava-llama3',label: 'LLaVA Llama 3',   size: '5.5 GB', desc: 'Strong instruction following' },
+  { id: 'llava:13b',   label: 'LLaVA 13B',       size: '8.0 GB', desc: 'Best accuracy for receipts', recommended: true },
+  { id: 'minicpm-v',   label: 'MiniCPM-V',        size: '5.5 GB', desc: 'Excellent at reading text in images' },
+  { id: 'llava-llama3',label: 'LLaVA Llama 3',    size: '5.5 GB', desc: 'Strong instruction following' },
+  { id: 'llava',       label: 'LLaVA 7B',         size: '4.7 GB', desc: 'May miss items or misread numbers', warn: true },
+  { id: 'moondream',   label: 'Moondream 2',       size: '1.7 GB', desc: 'Fastest but lowest receipt accuracy', warn: true },
 ];
 
 async function openOllamaSettingsModal() {
@@ -1190,10 +1190,14 @@ async function openOllamaSettingsModal() {
 
   const modelRows = OLLAMA_MODELS.map(m => {
     const installed = models.some(n => n === m.id || n.startsWith(m.id + ':'));
+    const badge = m.recommended
+      ? '<span class="ollama-tag recommended">recommended</span>'
+      : m.warn ? '<span class="ollama-tag warn">low accuracy</span>' : '';
     return `<div class="ollama-model-row${m.id === current ? ' selected' : ''}" data-model-id="${m.id}">
       <div class="ollama-model-info">
         <div class="ollama-model-name">${m.label}
-          ${installed ? '<span class="ollama-installed-tag">installed</span>' : ''}
+          ${badge}
+          ${installed ? '<span class="ollama-tag installed">installed</span>' : ''}
         </div>
         <div class="ollama-model-desc">${m.desc} · ${m.size}</div>
         ${!installed ? `<code class="ollama-pull-cmd">ollama pull ${m.id}</code>` : ''}
@@ -1379,6 +1383,11 @@ async function openReceiptReviewModal(receipt) {
         ${receipt.total != null ? `<span>💰 Total: <strong>${fmtCurrency(receipt.total)}</strong></span>` : ''}
         <span style="margin-left:auto;font-size:12px">${receipt.items.length} item${receipt.items.length !== 1 ? 's' : ''} found</span>
       </div>
+      ${['llava', 'moondream'].includes(model) ? `<div class="scan-accuracy-warn">
+        ⚠ <strong>${escHtml(model)}</strong> may miss items or misread numbers.
+        For better results, switch to <strong>LLaVA 13B</strong> or <strong>MiniCPM-V</strong> in AI Settings.
+        Please verify all amounts before saving.
+      </div>` : ''}
       <div class="form-group" style="margin-bottom:14px">
         <label class="form-label">Expense Date</label>
         <input class="form-input" type="date" id="receipt-date" value="${receiptDate}" max="${todayISO()}" style="max-width:180px">

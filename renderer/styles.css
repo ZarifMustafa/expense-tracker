@@ -629,7 +629,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 }
 .receipt-info-bar strong { color: var(--text); }
 
-.receipt-items { display: flex; flex-direction: column; gap: 12px; max-height: 420px; overflow-y: auto; padding-right: 2px; }
+.receipt-items { display: flex; flex-direction: column; gap: 12px; max-height: 380px; overflow-y: auto; padding-right: 2px; }
+.scan-accuracy-warn {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  color: #78350f;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
 
 .receipt-item-row {
   background: var(--bg);
@@ -702,17 +712,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .ollama-model-name { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
 .ollama-model-desc { font-size: 11.5px; color: var(--text-muted); }
 .ollama-model-check { font-size: 15px; color: var(--accent); font-weight: 700; min-width: 20px; text-align: right; }
-.ollama-installed-tag {
+.ollama-tag {
   display: inline-block;
   font-size: 10px;
   font-weight: 600;
-  background: var(--success-light);
-  color: #166534;
   padding: 1px 6px;
   border-radius: 99px;
   margin-left: 6px;
   vertical-align: middle;
 }
+.ollama-tag.installed { background: var(--success-light); color: #166534; }
+.ollama-tag.recommended { background: #dbeafe; color: #1d4ed8; }
+.ollama-tag.warn { background: #fef3c7; color: #92400e; }
 
 .ollama-pull-cmd {
   display: inline-block;
