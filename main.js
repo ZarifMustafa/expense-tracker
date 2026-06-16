@@ -42,6 +42,11 @@ function createWindow() {
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.once('ready-to-show', () => mainWindow.show());
+
+  // Allow microphone access for voice expense entry
+  mainWindow.webContents.session.setPermissionRequestHandler((_, permission, callback) => {
+    callback(permission === 'media');
+  });
 }
 
 app.whenReady().then(createWindow);
@@ -88,6 +93,50 @@ function svgToPng(svgPath) {
   });
 }
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url));
+
+// Parse voice transcript into expenses using Groq
+ipcMain.handle('parse-voice', async (_, { transcript, apiKey }) => {
+  try {
+    const { net } = require('electron');
+    const res = await net.fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{
+          role: 'user',
+          content: `Extract expense items from this spoken text and return ONLY a JSON object — no markdown, no explanation:
+{"date":"YYYY-MM-DD or empty string if no date mentioned","items":[{"name":"expense description","amount":0.00}]}
+
+Rules:
+- Extract every expense or purchase mentioned
+- amount is a plain decimal number (0 if not mentioned)
+- If a date like "yesterday", "today", "Monday" is mentioned convert it relative to today (${new Date().toISOString().slice(0,10)})
+- If no date mentioned, use empty string
+- Keep names short and clear
+
+Spoken text: "${transcript.replace(/"/g, "'")}"`
+        }],
+        temperature: 0.1,
+        max_tokens: 512
+      })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (res.status === 401) return { ok: false, error: 'INVALID_KEY' };
+      throw new Error(err.error?.message || `API error ${res.status}`);
+    }
+    const data = await res.json();
+    const text = (data.choices?.[0]?.message?.content || '').trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('Could not extract expenses from what you said. Please try again.');
+    const parsed = JSON.parse(jsonMatch[0]);
+    if (!parsed.items?.length) throw new Error('No expenses found in what you said.');
+    return { ok: true, data: { ...parsed, merchant: '', total: parsed.items.reduce((s, i) => s + (i.amount || 0), 0) } };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
 
 // Scan receipt using Groq API (free, no credit card — llama-3.2-11b-vision)
 ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {

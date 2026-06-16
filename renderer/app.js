@@ -1074,6 +1074,8 @@ document.addEventListener('click', async (e) => {
       await persist(); toast('Budget item deleted'); renderPage(); break;
 
     case 'open-scan-receipt': await openScanReceiptFlow(); break;
+    case 'open-voice-expense': openVoiceExpenseFlow(); break;
+    case 'stop-voice': stopVoiceRecording(); break;
     case 'open-ollama-settings': openAISettingsModal(); break;
     case 'save-ai-settings': saveAISettings(); break;
     case 'open-anthropic-console': await window.api.openExternal('https://console.groq.com/keys'); break;
@@ -1397,6 +1399,148 @@ window.toggleReceiptRow = function(i) {
   const checked = document.getElementById(`exclude-${i}`)?.checked;
   if (row) row.classList.toggle('excluded', checked);
 };
+
+/* ============================================================
+   VOICE EXPENSE FLOW
+   ============================================================ */
+let _voiceRecognition = null;
+
+function stopVoiceRecording() {
+  if (_voiceRecognition) {
+    _voiceRecognition.stop();
+  }
+}
+
+function openVoiceExpenseFlow() {
+  const apiKey = state.data.settings.groqApiKey || '';
+  if (!apiKey) {
+    openModal(`
+      <div class="modal-header">
+        <div class="modal-title">API Key Required</div>
+        <button class="modal-close" data-action="close-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:13.5px;color:var(--text);margin-bottom:14px;line-height:1.7">
+          Voice expense entry uses <strong>Groq AI</strong> to understand what you say. A free API key is required.
+        </p>
+        <div class="ollama-setup-steps">
+          <div class="setup-step"><span class="step-num">1</span>
+            <div><strong>Get a free key</strong><br>
+            <button class="btn btn-primary btn-sm" style="margin-top:6px" data-action="open-anthropic-console">Open console.groq.com</button></div>
+          </div>
+          <div class="setup-step"><span class="step-num">2</span>
+            <div><strong>Enter it in AI Settings</strong><br>
+            <span style="font-size:12.5px;color:var(--text-muted)">Stored locally, never shared.</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-action="close-modal">Close</button>
+        <button class="btn btn-primary" data-action="open-ollama-settings">Open AI Settings</button>
+      </div>`);
+    return;
+  }
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    toast('Speech recognition is not available', 'error');
+    return;
+  }
+
+  openModal(`
+    <div class="modal-header">
+      <div class="modal-title">Voice Expense Entry</div>
+      <button class="modal-close" data-action="close-modal">✕</button>
+    </div>
+    <div class="modal-body voice-modal-body">
+      <p class="voice-prompt">Tell me what you spent — say amounts, names, and optionally a date.</p>
+      <div id="voice-transcript" class="voice-transcript">
+        <span class="voice-placeholder">e.g. "I spent 500 taka on lunch and 200 on transport"</span>
+      </div>
+      <button id="voice-btn" class="voice-mic-btn" data-action="stop-voice" title="Tap to stop">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      </button>
+      <div id="voice-status" class="voice-status">Listening… tap mic to stop</div>
+    </div>`);
+
+  const recognition = new SpeechRecognition();
+  _voiceRecognition = recognition;
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+
+  let finalTranscript = '';
+
+  recognition.onresult = (event) => {
+    let interim = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      if (event.results[i].isFinal) {
+        finalTranscript += event.results[i][0].transcript + ' ';
+      } else {
+        interim += event.results[i][0].transcript;
+      }
+    }
+    const el = document.getElementById('voice-transcript');
+    if (el) {
+      el.innerHTML = finalTranscript
+        ? `<span class="voice-final">${escHtml(finalTranscript)}</span><span class="voice-interim">${escHtml(interim)}</span>`
+        : `<span class="voice-interim">${escHtml(interim)}</span><span class="voice-placeholder">${interim ? '' : 'e.g. "I spent 500 taka on lunch and 200 on transport"'}</span>`;
+    }
+  };
+
+  recognition.onerror = (e) => {
+    _voiceRecognition = null;
+    if (e.error === 'no-speech') return;
+    toast('Microphone error: ' + e.error, 'error');
+  };
+
+  recognition.onend = async () => {
+    _voiceRecognition = null;
+    const transcript = finalTranscript.trim();
+    if (!transcript) {
+      const statusEl = document.getElementById('voice-status');
+      if (statusEl) statusEl.textContent = 'No speech detected. Please try again.';
+      const btn = document.getElementById('voice-btn');
+      if (btn) btn.classList.remove('recording');
+      return;
+    }
+
+    const statusEl = document.getElementById('voice-status');
+    if (statusEl) statusEl.textContent = 'Analyzing…';
+    const btn = document.getElementById('voice-btn');
+    if (btn) { btn.classList.remove('recording'); btn.disabled = true; }
+
+    const result = await window.api.parseVoice({ transcript, apiKey });
+
+    if (!result.ok) {
+      openModal(`
+        <div class="modal-header">
+          <div class="modal-title">Could Not Parse</div>
+          <button class="modal-close" data-action="close-modal">✕</button>
+        </div>
+        <div class="modal-body">
+          <p style="color:var(--danger);font-size:13.5px;margin-bottom:8px">${escHtml(result.error)}</p>
+          <p style="font-size:12.5px;color:var(--text-muted)">Try speaking more clearly, e.g. "500 taka on groceries and 200 on transport".</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" data-action="close-modal">Close</button>
+          <button class="btn btn-primary" data-action="open-voice-expense">Try Again</button>
+        </div>`);
+      return;
+    }
+
+    openReceiptReviewModal(result.data);
+  };
+
+  recognition.start();
+  const btn = document.getElementById('voice-btn');
+  if (btn) btn.classList.add('recording');
+}
 
 /* ============================================================
    INIT
