@@ -59,20 +59,44 @@ ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Select Receipt Image',
     properties: ['openFile'],
-    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp'] }]
+    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'svg'] }]
   });
   return result.canceled ? null : result.filePaths[0];
 });
+
+function svgToPng(svgPath) {
+  return new Promise((resolve, reject) => {
+    const svgContent = fs.readFileSync(svgPath, 'utf8');
+    const widthMatch = svgContent.match(/viewBox=["'][^"']*["']/);
+    let w = 400, h = 600;
+    if (widthMatch) {
+      const parts = widthMatch[0].match(/[\d.]+/g);
+      if (parts && parts.length >= 4) { w = Math.ceil(parseFloat(parts[2])); h = Math.ceil(parseFloat(parts[3])); }
+    }
+    const win = new BrowserWindow({ show: false, width: w, height: h, webPreferences: { offscreen: true } });
+    const html = `<!DOCTYPE html><html><head><style>*{margin:0;padding:0}body{background:#f9f9f7}</style></head>
+<body>${svgContent}</body></html>`;
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    win.webContents.on('did-finish-load', async () => {
+      try {
+        const img = await win.webContents.capturePage({ x: 0, y: 0, width: w, height: h });
+        win.close();
+        resolve(img.toPNG());
+      } catch (e) { win.close(); reject(e); }
+    });
+    win.webContents.on('did-fail-load', (_, code, desc) => { win.close(); reject(new Error(desc)); });
+  });
+}
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url));
 
 // Scan receipt using Groq API (free, no credit card — llama-3.2-11b-vision)
 ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
   try {
     const { net } = require('electron');
-    const imageBuffer = fs.readFileSync(imagePath);
-    const base64 = imageBuffer.toString('base64');
     const ext = imagePath.split('.').pop().toLowerCase();
-    const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+    const imageBuffer = ext === 'svg' ? await svgToPng(imagePath) : fs.readFileSync(imagePath);
+    const base64 = imageBuffer.toString('base64');
+    const mimeType = ext === 'webp' ? 'image/webp' : 'image/png';
 
     const prompt = `Look at this receipt image and extract every line item.
 
