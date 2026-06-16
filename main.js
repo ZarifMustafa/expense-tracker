@@ -65,14 +65,14 @@ ipcMain.handle('open-file-dialog', async () => {
 });
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url));
 
-// Scan receipt using Claude API (claude-haiku-4-5)
+// Scan receipt using Gemini API (free tier — 1500 req/day)
 ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
   try {
     const { net } = require('electron');
     const imageBuffer = fs.readFileSync(imagePath);
     const base64 = imageBuffer.toString('base64');
     const ext = imagePath.split('.').pop().toLowerCase();
-    const mediaType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+    const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
 
     const prompt = `Look at this receipt image and extract every line item.
 
@@ -86,34 +86,32 @@ Rules:
 - Exclude: tax, vat, subtotal, balance, change, payment method lines
 - date format: YYYY-MM-DD (e.g. 01-01-2018 becomes "2018-01-01")`;
 
-    const res = await net.fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1024,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-            { type: 'text', text: prompt }
-          ]
-        }]
-      })
-    });
+    const res = await net.fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { inlineData: { mimeType, data: base64 } },
+              { text: prompt }
+            ]
+          }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 1024 }
+        })
+      }
+    );
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      if (res.status === 401) return { ok: false, error: 'INVALID_KEY' };
+      if (res.status === 400 && err.error?.message?.includes('API_KEY')) return { ok: false, error: 'INVALID_KEY' };
+      if (res.status === 403) return { ok: false, error: 'INVALID_KEY' };
       throw new Error(err.error?.message || `API error ${res.status}`);
     }
 
     const data = await res.json();
-    const text = (data.content?.[0]?.text || '').trim();
+    const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Could not parse receipt data. Please try again.');
     const parsed = JSON.parse(jsonMatch[0]);

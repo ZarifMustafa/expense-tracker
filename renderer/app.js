@@ -1072,7 +1072,7 @@ document.addEventListener('click', async (e) => {
     case 'open-scan-receipt': await openScanReceiptFlow(); break;
     case 'open-ollama-settings': openAISettingsModal(); break;
     case 'save-ai-settings': saveAISettings(); break;
-    case 'open-anthropic-console': await window.api.openExternal('https://console.anthropic.com'); break;
+    case 'open-anthropic-console': await window.api.openExternal('https://aistudio.google.com/app/apikey'); break;
     case 'confirm-receipt-items': await confirmReceiptItems(); break;
 
     case 'open-add-expense': await openAddExpenseModal(); break;
@@ -1173,7 +1173,7 @@ document.addEventListener('click', (e) => {
    RECEIPT SCAN FLOW
    ============================================================ */
 function openAISettingsModal() {
-  const current = state.data.settings.claudeApiKey || '';
+  const current = state.data.settings.geminiApiKey || '';
   openModal(`
     <div class="modal-header">
       <div class="modal-title">AI Settings</div>
@@ -1181,12 +1181,12 @@ function openAISettingsModal() {
     </div>
     <div class="modal-body">
       <div class="form-group">
-        <label class="form-label">Anthropic API Key</label>
-        <input id="claude-api-key" class="form-input" type="password"
-          value="${escHtml(current)}" placeholder="sk-ant-…" autocomplete="off">
+        <label class="form-label">Google Gemini API Key</label>
+        <input id="gemini-api-key" class="form-input" type="password"
+          value="${escHtml(current)}" placeholder="AIza…" autocomplete="off">
         <div class="form-hint">
-          Used only for receipt scanning (claude-haiku-4-5). Your key is stored locally on this device.
-          <br><a class="form-hint-link" data-action="open-anthropic-console">Get a free API key →</a>
+          Free tier: 1,500 receipt scans/day. No credit card needed.
+          <br><a class="form-hint-link" data-action="open-anthropic-console">Get free key at aistudio.google.com →</a>
         </div>
       </div>
     </div>
@@ -1197,16 +1197,16 @@ function openAISettingsModal() {
 }
 
 function saveAISettings() {
-  const val = document.getElementById('claude-api-key')?.value.trim();
+  const val = document.getElementById('gemini-api-key')?.value.trim();
   if (!val) { toast('API key is required', 'error'); return; }
-  state.data.settings.claudeApiKey = val;
+  state.data.settings.geminiApiKey = val;
   persist();
   closeModal();
   toast('API key saved', 'success');
 }
 
 async function openScanReceiptFlow() {
-  const apiKey = state.data.settings.claudeApiKey || '';
+  const apiKey = state.data.settings.geminiApiKey || '';
   if (!apiKey) {
     openModal(`
       <div class="modal-header">
@@ -1215,8 +1215,8 @@ async function openScanReceiptFlow() {
       </div>
       <div class="modal-body">
         <p style="font-size:13.5px;color:var(--text);margin-bottom:14px;line-height:1.7">
-          Receipt scanning uses <strong>Claude AI</strong> (claude-haiku-4-5) for fast, accurate OCR.
-          An Anthropic API key is required.
+          Receipt scanning uses <strong>Google Gemini</strong> (free tier, 1,500 scans/day).
+          A free API key from Google AI Studio is required.
         </p>
         <div class="ollama-setup-steps">
           <div class="setup-step"><span class="step-num">1</span>
@@ -1247,7 +1247,7 @@ async function openScanReceiptFlow() {
     </div>
     <div class="modal-body scan-loading">
       <div class="spinner"></div>
-      <p>Analyzing with <strong>Claude Haiku</strong>…</p>
+      <p>Analyzing with <strong>Gemini</strong>…</p>
     </div>`);
 
   const result = await window.api.scanReceipt({ imagePath: filePath, apiKey });
