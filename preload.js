@@ -8,5 +8,6 @@ contextBridge.exposeInMainWorld('api', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   scanReceipt: (args) => ipcRenderer.invoke('scan-receipt', args),
   transcribeVoice: (args) => ipcRenderer.invoke('transcribe-voice', args),
+  matchCategories: (args) => ipcRenderer.invoke('match-categories', args),
   parseVoice: (args) => ipcRenderer.invoke('parse-voice', args)
 });

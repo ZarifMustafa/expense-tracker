@@ -124,6 +124,48 @@ ipcMain.handle('transcribe-voice', async (_, { audioData, apiKey }) => {
   }
 });
 
+// Match expense items to budget categories using Groq
+ipcMain.handle('match-categories', async (_, { items, categories, apiKey }) => {
+  try {
+    if (!categories.length || !apiKey) return { ok: true, matches: items.map(() => null) };
+    const { net } = require('electron');
+    const catList = categories.map((c, i) => `${i}: ${c.name}`).join('\n');
+    const itemList = items.map((item, i) => `${i}: ${item.name}`).join('\n');
+    const res = await net.fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{
+          role: 'user',
+          content: `Match each expense item to the most relevant budget category index. Return ONLY a JSON array — one entry per expense item — with the category index (number) or null if none fits well.
+
+Budget categories:
+${catList}
+
+Expense items to match:
+${itemList}
+
+Return format example for 3 items: [0, null, 2]
+Return ONLY the JSON array, no explanation.`
+        }],
+        temperature: 0,
+        max_tokens: 256
+      })
+    });
+    if (!res.ok) return { ok: true, matches: items.map(() => null) };
+    const data = await res.json();
+    const text = (data.choices?.[0]?.message?.content || '').trim();
+    const arrMatch = text.match(/\[[\s\S]*?\]/);
+    if (!arrMatch) return { ok: true, matches: items.map(() => null) };
+    const indices = JSON.parse(arrMatch[0]);
+    const matches = indices.map(idx => (idx != null && categories[idx]) ? categories[idx].id : null);
+    return { ok: true, matches };
+  } catch {
+    return { ok: true, matches: items.map(() => null) };
+  }
+});
+
 // Parse voice transcript into expenses using Groq
 ipcMain.handle('parse-voice', async (_, { transcript, apiKey }) => {
   try {

@@ -1289,12 +1289,31 @@ async function openReceiptReviewModal(receipt) {
   const expYear = expDate.getFullYear();
   await ensureMisc(expMonth, expYear);
   const budgetItems = getBudgetItems(expMonth, expYear);
+  const miscId = getMiscId(expMonth, expYear);
 
-  const categoryOptions = budgetItems.map(b =>
-    `<option value="${b.id}">${escHtml(b.name)}</option>`
+  // AI category matching — only if there are non-misc categories
+  const matchableCats = budgetItems.filter(b => !b.isSystem);
+  let matches = receipt.items.map(() => null);
+  if (matchableCats.length > 0) {
+    const apiKey = state.data.settings.groqApiKey || '';
+    if (apiKey) {
+      const result = await window.api.matchCategories({
+        items: receipt.items,
+        categories: matchableCats.map(b => ({ id: b.id, name: b.name })),
+        apiKey
+      });
+      if (result.ok) matches = result.matches;
+    }
+  }
+
+  const buildOptions = (selectedId) => budgetItems.map(b =>
+    `<option value="${b.id}"${b.id === selectedId ? ' selected' : ''}>${escHtml(b.name)}</option>`
   ).join('');
 
-  const itemRows = receipt.items.map((item, i) => `
+  const itemRows = receipt.items.map((item, i) => {
+    const catId = matches[i] || miscId;
+    const matchedName = matches[i] ? (budgetItems.find(b => b.id === matches[i])?.name || '') : '';
+    return `
     <div class="receipt-item-row" id="receipt-row-${i}">
       <div class="receipt-item-header">
         <div class="receipt-item-num">${i + 1}</div>
@@ -1313,10 +1332,11 @@ async function openReceiptReviewModal(receipt) {
         </div>
       </div>
       <div class="receipt-item-cat">
-        <label>Budget Category</label>
-        <select class="form-select" id="ri-cat-${i}">${categoryOptions}</select>
+        <label>Budget Category${matchedName ? ` <span class="cat-ai-badge">AI</span>` : ''}</label>
+        <select class="form-select" id="ri-cat-${i}">${buildOptions(catId)}</select>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   openModal(`
     <div class="modal-header">
