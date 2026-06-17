@@ -1306,13 +1306,11 @@ async function openReceiptReviewModal(receipt) {
     }
   }
 
-  const buildOptions = (selectedId) => budgetItems.map(b =>
-    `<option value="${b.id}"${b.id === selectedId ? ' selected' : ''}>${escHtml(b.name)}</option>`
-  ).join('');
+  const budgetBadgeItems = budgetItems.map(b => ({ value: b.id, label: b.name, color: b.color }));
 
   const itemRows = receipt.items.map((item, i) => {
     const catId = matches[i] || miscId;
-    const matchedName = matches[i] ? (budgetItems.find(b => b.id === matches[i])?.name || '') : '';
+    const aiMatched = !!matches[i];
     return `
     <div class="receipt-item-row" id="receipt-row-${i}">
       <div class="receipt-item-header">
@@ -1332,8 +1330,8 @@ async function openReceiptReviewModal(receipt) {
         </div>
       </div>
       <div class="receipt-item-cat">
-        <label>Budget Category${matchedName ? ` <span class="cat-ai-badge">AI</span>` : ''}</label>
-        <select class="form-select" id="ri-cat-${i}">${buildOptions(catId)}</select>
+        <label class="form-label" style="margin-bottom:6px">Budget Category${aiMatched ? ' <span class="cat-ai-badge">AI</span>' : ''}</label>
+        ${badgeSelectorHtml(`ri-cat-${i}`, budgetBadgeItems, catId)}
       </div>
     </div>`;
   }).join('');
@@ -1383,7 +1381,7 @@ async function confirmReceiptItems() {
     const amount = parseFloat(document.getElementById(`ri-amount-${i}`)?.value);
     if (!name || !amount || isNaN(amount)) continue;
 
-    const budgetItemId = document.getElementById(`ri-cat-${i}`)?.value || getMiscId(expMonth, expYear);
+    const budgetItemId = getSelectedBadgeValue(`ri-cat-${i}`) || getMiscId(expMonth, expYear);
     const budgetItem = getBudgetItem(budgetItemId);
 
     const expense = {
