@@ -47,6 +47,7 @@ async function loadData() {
     budgetItems: d.budgetItems || [],
     expenses: d.expenses || [],
     wishItems: d.wishItems || [],
+    presets: d.presets || [],
     settings: d.settings || {}
   };
 }
@@ -262,6 +263,10 @@ function renderBudget() {
           <span class="month-nav-label">${MONTHS[m-1]} ${y}</span>
           <button data-action="budget-next-month">&#8250;</button>
         </div>
+        <button class="btn btn-secondary" data-action="open-presets">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 10h16M4 14h10"/><circle cx="17" cy="17" r="3"/><path d="M17 15v2l1 1"/></svg>
+          Presets
+        </button>
         <button class="btn btn-primary" data-action="open-add-budget-item">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
           Add Item
@@ -1065,6 +1070,11 @@ document.addEventListener('click', async (e) => {
       if (state.budgetMonth > 12) { state.budgetMonth = 1; state.budgetYear++; }
       renderPage(); break;
 
+    case 'open-presets': openPresetsModal(); break;
+    case 'save-current-as-preset': await saveCurrentAsPreset(); break;
+    case 'apply-preset': await applyPreset(id); break;
+    case 'delete-preset': deletePreset(id); break;
+    case 'confirm-save-preset': await confirmSavePreset(); break;
     case 'open-add-budget-item': openAddBudgetItemModal(); break;
     case 'edit-budget-item': openAddBudgetItemModal(id); break;
     case 'save-budget-item': await saveBudgetItem(el.dataset.id || null); break;
@@ -1417,6 +1427,147 @@ window.toggleReceiptRow = function(i) {
   const checked = document.getElementById(`exclude-${i}`)?.checked;
   if (row) row.classList.toggle('excluded', checked);
 };
+
+/* ============================================================
+   BUDGET PRESETS
+   ============================================================ */
+function openPresetsModal() {
+  const { budgetMonth: m, budgetYear: y } = state;
+  const presets = state.data.presets || [];
+  const currentItems = getBudgetItems(m, y).filter(b => !b.isSystem);
+
+  const presetCards = presets.length === 0
+    ? `<div class="preset-empty">No saved presets yet. Save your current month's budget as a preset to reuse it.</div>`
+    : presets.map(p => `
+      <div class="preset-card">
+        <div class="preset-card-info">
+          <div class="preset-card-name">${escHtml(p.name)}</div>
+          <div class="preset-card-meta">${p.items.length} item${p.items.length !== 1 ? 's' : ''} · ${fmtCurrency(p.items.reduce((s, i) => s + (i.estimatedCost || 0), 0))} total</div>
+          <div class="preset-card-items">${p.items.map(i => `<span class="preset-item-badge" style="background:${i.color}22;color:${i.color};border:1px solid ${i.color}44">${escHtml(i.name)}</span>`).join('')}</div>
+        </div>
+        <div class="preset-card-actions">
+          <button class="btn btn-primary btn-sm" data-action="apply-preset" data-id="${p.id}">Apply</button>
+          <button class="btn btn-ghost btn-sm" data-action="delete-preset" data-id="${p.id}" style="color:var(--danger)">Delete</button>
+        </div>
+      </div>`).join('');
+
+  openModal(`
+    <div class="modal-header">
+      <div class="modal-title">Budget Presets</div>
+      <button class="modal-close" data-action="close-modal">✕</button>
+    </div>
+    <div class="modal-body">
+      ${currentItems.length > 0 ? `
+      <div class="preset-save-row">
+        <span style="font-size:13px;color:var(--text-muted)">${MONTHS[m-1]} ${y} has ${currentItems.length} item${currentItems.length !== 1 ? 's' : ''}</span>
+        <button class="btn btn-secondary btn-sm" data-action="save-current-as-preset">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          Save as Preset
+        </button>
+      </div>
+      <div class="divider"></div>` : ''}
+      <div class="preset-list">${presetCards}</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" data-action="close-modal">Close</button>
+    </div>`);
+}
+
+function saveCurrentAsPreset() {
+  openModal(`
+    <div class="modal-header">
+      <div class="modal-title">Save as Preset</div>
+      <button class="modal-close" data-action="close-modal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Preset Name <span class="req">*</span></label>
+        <input id="preset-name-input" class="form-input" placeholder="e.g. Monthly Essentials" autofocus>
+        <div class="form-hint">Give this preset a name so you can recognise it later.</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" data-action="open-presets">Back</button>
+      <button class="btn btn-primary" data-action="confirm-save-preset">Save Preset</button>
+    </div>`);
+  setTimeout(() => document.getElementById('preset-name-input')?.focus(), 50);
+}
+
+async function confirmSavePreset() {
+  const name = document.getElementById('preset-name-input')?.value.trim();
+  if (!name) { toast('Preset name is required', 'error'); return; }
+
+  const { budgetMonth: m, budgetYear: y } = state;
+  const items = getBudgetItems(m, y).filter(b => !b.isSystem).map(b => ({
+    name: b.name,
+    estimatedCost: b.estimatedCost,
+    color: b.color,
+    priority: b.priority,
+    note: b.note || '',
+    wishItemId: b.wishItemId || null
+  }));
+
+  if (!items.length) { toast('No budget items to save', 'error'); return; }
+
+  if (!state.data.presets) state.data.presets = [];
+  state.data.presets.push({ id: await genId(), name, items, createdAt: new Date().toISOString() });
+  await persist();
+  closeModal();
+  toast(`Preset "${name}" saved`, 'success');
+}
+
+async function applyPreset(presetId) {
+  const preset = (state.data.presets || []).find(p => p.id === presetId);
+  if (!preset) return;
+
+  const { budgetMonth: m, budgetYear: y } = state;
+  await ensureMisc(m, y);
+
+  let added = 0;
+  for (const item of preset.items) {
+    // Skip if an item with the same name already exists this month
+    const exists = getBudgetItems(m, y).some(b => b.name.toLowerCase() === item.name.toLowerCase() && !b.isSystem);
+    if (exists) continue;
+
+    // Resolve wishItemId — keep it only if the wish item still exists
+    const wishItemId = item.wishItemId && state.data.wishItems.find(w => w.id === item.wishItemId)
+      ? item.wishItemId : null;
+
+    state.data.budgetItems.push({
+      id: await genId(),
+      name: item.name,
+      estimatedCost: item.estimatedCost,
+      color: item.color,
+      priority: item.priority,
+      status: 'pending',
+      note: item.note || '',
+      wishItemId,
+      month: m,
+      year: y
+    });
+    added++;
+  }
+
+  await persist();
+  closeModal();
+
+  if (added === 0) {
+    toast('All items from this preset already exist this month', 'info');
+  } else {
+    toast(`Applied "${preset.name}" — ${added} item${added !== 1 ? 's' : ''} added`, 'success');
+  }
+  renderPage();
+}
+
+function deletePreset(presetId) {
+  const preset = (state.data.presets || []).find(p => p.id === presetId);
+  if (!preset) return;
+  if (!confirm(`Delete preset "${preset.name}"?`)) return;
+  state.data.presets = state.data.presets.filter(p => p.id !== presetId);
+  persist();
+  openPresetsModal();
+  toast('Preset deleted', 'success');
+}
 
 /* ============================================================
    VOICE EXPENSE FLOW
