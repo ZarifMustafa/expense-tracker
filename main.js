@@ -4,6 +4,9 @@ const fs = require('fs');
 
 let mainWindow;
 
+// Keep one data folder (%APPDATA%\expense-tracker) for both `npm start` and the installed app
+app.setPath('userData', path.join(app.getPath('appData'), 'expense-tracker'));
+
 function getDataPath() {
   return path.join(app.getPath('userData'), 'expense-tracker-data.json');
 }
