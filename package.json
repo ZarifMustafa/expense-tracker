@@ -24,9 +24,9 @@
       "buildResources": "build"
     },
     "files": [
-      "main.js",
-      "preload.js",
+      "*.js",
       "renderer/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "win": {

@@ -1,11 +1,21 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 let mainWindow;
 
-// Keep one data folder (%APPDATA%\expense-tracker) for both `npm start` and the installed app
-app.setPath('userData', path.join(app.getPath('appData'), 'expense-tracker'));
+const { GROQ_MODEL, answerText } = require('./groq');
+const { searchAll } = require('./price-search');
+const priceWatch = require('./price-watch');
+
+const APP_ID = 'com.zarifmustafa.expensetracker'; // must match build.appId so notifications show
+const ICON = path.join(__dirname, 'assets', 'icon.png');
+let tray = null;
+let quitting = false;
+
+// Keep one data folder (%APPDATA%\expense-tracker) for both `npm start` and the installed app.
+// EXPENSE_TRACKER_DATA_DIR points it elsewhere, for testing without touching real data.
+app.setPath('userData', process.env.EXPENSE_TRACKER_DATA_DIR || path.join(app.getPath('appData'), 'expense-tracker'));
 
 function getDataPath() {
   return path.join(app.getPath('userData'), 'expense-tracker-data.json');
@@ -31,9 +41,10 @@ function writeData(data) {
   fs.writeFileSync(getDataPath(), JSON.stringify(data, null, 2));
 }
 
-function createWindow() {
+function createWindow({ hidden = false } = {}) {
   mainWindow = new BrowserWindow({
     width: 1280, height: 800, minWidth: 960, minHeight: 640,
+    icon: ICON,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -44,16 +55,86 @@ function createWindow() {
     show: false
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  if (!hidden) mainWindow.once('ready-to-show', () => mainWindow.show());
 
   // Allow microphone access for voice expense entry
   mainWindow.webContents.session.setPermissionRequestHandler((_, permission, callback) => {
     callback(permission === 'media');
   });
+
+  // While price alerts are active, closing the window keeps the app in the tray so checks continue
+  mainWindow.on('close', (e) => {
+    if (quitting || !keepInTray()) return;
+    e.preventDefault();
+    mainWindow.hide();
+    // Explain once why the app didn't quit. Stored in the price-watch file (main-process owned),
+    // since the window rewrites the main data file on every save.
+    const store = priceWatch.readStore();
+    if (!store._trayHintShown && Notification.isSupported()) {
+      new Notification({ title: 'Expense Tracker is still running', body: 'It keeps checking prices for your alerts. Right-click the tray icon to quit.', icon: ICON }).show();
+      priceWatch.setMeta('_trayHintShown', true);
+    }
+  });
 }
 
-app.whenReady().then(createWindow);
+function showWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  else { mainWindow.show(); if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
+}
+
+// Tray stays in the background only while alerts exist, unless the user turned it off
+function keepInTray() {
+  return readData().settings.keepRunningForAlerts !== false && priceWatch.hasActiveAlerts();
+}
+
+function createTray() {
+  tray = new Tray(ICON);
+  tray.setToolTip('Expense Tracker');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Expense Tracker', click: showWindow },
+    { label: 'Check prices now', click: () => priceWatch.checkAll() },
+    { type: 'separator' },
+    { label: 'Quit', click: () => { quitting = true; app.quit(); } }
+  ]));
+  tray.on('click', showWindow);
+}
+
+// Only one copy runs; opening it again brings the existing window back
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', showWindow);
+  app.setAppUserModelId(APP_ID);
+  app.whenReady().then(() => {
+    createWindow({ hidden: process.argv.includes('--hidden') });
+    createTray();
+    priceWatch.start({
+      readData,
+      onUpdate: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('price-watch-updated'); }
+    });
+  });
+}
+app.on('before-quit', () => { quitting = true; });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+
+/* ---------- Price search & alerts ---------- */
+ipcMain.handle('search-prices', async (_, { wishId, query, apiKey }) => {
+  const result = await searchAll(query, apiKey);
+  if (wishId) priceWatch.recordResult(wishId, result);
+  return result;
+});
+ipcMain.handle('get-price-watch', () => priceWatch.readStore());
+ipcMain.handle('check-prices-now', () => priceWatch.checkAll());
+ipcMain.handle('price-settings-changed', () => { priceWatch.schedule(); return true; });
+ipcMain.handle('get-startup', () => ({
+  available: app.isPackaged,   // in dev this would register electron.exe, so only offer it in the installed app
+  enabled: app.isPackaged && app.getLoginItemSettings({ args: ['--hidden'] }).openAtLogin
+}));
+ipcMain.handle('set-startup', (_, enabled) => {
+  if (!app.isPackaged) return false;
+  app.setLoginItemSettings({ openAtLogin: !!enabled, args: ['--hidden'] });
+  return true;
+});
 
 ipcMain.handle('get-data', () => readData());
 ipcMain.handle('save-data', (_, data) => {
@@ -138,7 +219,8 @@ ipcMain.handle('match-categories', async (_, { items, categories, apiKey }) => {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: GROQ_MODEL,
+        reasoning_effort: 'none',
         messages: [{
           role: 'user',
           content: `Match each expense item to the most relevant budget category index. Return ONLY a JSON array — one entry per expense item — with the category index (number) or null if none fits well.
@@ -158,7 +240,7 @@ Return ONLY the JSON array, no explanation.`
     });
     if (!res.ok) return { ok: true, matches: items.map(() => null) };
     const data = await res.json();
-    const text = (data.choices?.[0]?.message?.content || '').trim();
+    const text = answerText(data);
     const arrMatch = text.match(/\[[\s\S]*?\]/);
     if (!arrMatch) return { ok: true, matches: items.map(() => null) };
     const indices = JSON.parse(arrMatch[0]);
@@ -177,7 +259,8 @@ ipcMain.handle('parse-voice', async (_, { transcript, apiKey }) => {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: GROQ_MODEL,
+        reasoning_effort: 'none',
         messages: [{
           role: 'user',
           content: `Extract expense items from this spoken text and return ONLY a JSON object — no markdown, no explanation:
@@ -202,7 +285,7 @@ Spoken text: "${transcript.replace(/"/g, "'")}"`
       throw new Error(err.error?.message || `API error ${res.status}`);
     }
     const data = await res.json();
-    const text = (data.choices?.[0]?.message?.content || '').trim();
+    const text = answerText(data);
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Could not extract expenses from what you said. Please try again.');
     const parsed = JSON.parse(jsonMatch[0]);
@@ -213,7 +296,7 @@ Spoken text: "${transcript.replace(/"/g, "'")}"`
   }
 });
 
-// Scan receipt using Groq API (free, no credit card — llama-3.2-11b-vision)
+// Scan receipt using Groq API (free, no credit card — vision model in GROQ_MODEL)
 ipcMain.handle('scan-receipt', async (_, { imagePath, apiKey }) => {
   try {
     const { net } = require('electron');
@@ -241,7 +324,8 @@ Rules:
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+        model: GROQ_MODEL,
+        reasoning_effort: 'none',
         messages: [{
           role: 'user',
           content: [
@@ -250,7 +334,7 @@ Rules:
           ]
         }],
         temperature: 0.1,
-        max_tokens: 1024
+        max_tokens: 2048
       })
     });
 
@@ -261,7 +345,7 @@ Rules:
     }
 
     const data = await res.json();
-    const text = (data.choices?.[0]?.message?.content || '').trim();
+    const text = answerText(data);
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Could not parse receipt data. Please try again.');
     const parsed = JSON.parse(jsonMatch[0]);

@@ -9,5 +9,12 @@ contextBridge.exposeInMainWorld('api', {
   scanReceipt: (args) => ipcRenderer.invoke('scan-receipt', args),
   transcribeVoice: (args) => ipcRenderer.invoke('transcribe-voice', args),
   matchCategories: (args) => ipcRenderer.invoke('match-categories', args),
-  parseVoice: (args) => ipcRenderer.invoke('parse-voice', args)
+  parseVoice: (args) => ipcRenderer.invoke('parse-voice', args),
+  searchPrices: (args) => ipcRenderer.invoke('search-prices', args),
+  getPriceWatch: () => ipcRenderer.invoke('get-price-watch'),
+  checkPricesNow: () => ipcRenderer.invoke('check-prices-now'),
+  priceSettingsChanged: () => ipcRenderer.invoke('price-settings-changed'),
+  getStartup: () => ipcRenderer.invoke('get-startup'),
+  setStartup: (enabled) => ipcRenderer.invoke('set-startup', enabled),
+  onPriceWatchUpdated: (cb) => ipcRenderer.on('price-watch-updated', () => cb())
 });

@@ -35,7 +35,8 @@ let state = {
   analysisYear: now.getFullYear(),
   logsMonth: 0,
   logsYear: 0,
-  data: { budgetItems: [], expenses: [], wishItems: [], settings: {} }
+  data: { budgetItems: [], expenses: [], wishItems: [], settings: {} },
+  priceWatch: {}   // latest Daraz/Bikroy results per wish item (from main process)
 };
 
 /* ============================================================
@@ -447,6 +448,7 @@ function renderWishlist() {
         <div class="page-subtitle">Track your savings goals and installments</div>
       </div>
       <div class="header-actions">
+        <button class="btn btn-secondary" data-action="open-alert-settings" title="How often prices are checked, tray and startup">🔔 Alert Settings</button>
         <button class="btn btn-primary" data-action="open-add-wish">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
           Add Wish
@@ -471,6 +473,7 @@ function wishCard(w) {
             ${statusBadge(status)}
           </div>
           ${w.note ? `<div class="wish-card-note">${escHtml(w.note)}</div>` : ''}
+          ${wishPriceStrip(w)}
         </div>
         <div class="wish-card-actions">
           <button class="btn btn-ghost btn-icon" data-action="edit-wish" data-id="${w.id}" title="Edit">
@@ -501,6 +504,10 @@ function wishCard(w) {
         </div>
         <div class="progress-pct">${pct}% complete</div>
         <div class="wish-card-btns">
+          <button class="btn btn-secondary btn-sm btn-compare" data-action="open-compare" data-id="${w.id}">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            Compare Prices
+          </button>
           <button class="btn btn-secondary btn-sm" data-action="wish-add-to-budget" data-id="${w.id}">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M12 14v4M10 16h4"/></svg>
             Add to Monthly Budget
@@ -588,11 +595,14 @@ function logItem(e) {
 /* ============================================================
    MODAL SYSTEM
    ============================================================ */
-function openModal(html) {
-  document.getElementById('modal-box').innerHTML = html;
+function openModal(html, { wide = false } = {}) {
+  const box = document.getElementById('modal-box');
+  box.classList.toggle('modal-wide', wide);
+  box.innerHTML = html;
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 function closeModal() {
+  compareState = null;
   document.getElementById('modal-overlay').classList.add('hidden');
   document.getElementById('modal-box').innerHTML = '';
 }
@@ -917,7 +927,9 @@ async function saveWishItem(editId) {
   if (!name) { toast('Name is required', 'error'); return; }
   if (!cost || isNaN(cost)) { toast('Target cost is required', 'error'); return; }
   const color = getSelectedColor(document.querySelector('[data-picker="wi-color"]').closest('.form-group'));
+  const existing = editId ? state.data.wishItems.find(w => w.id === editId) : null;
   const item = {
+    ...(existing || {}),   // keep fields this form does not edit, e.g. priceAlert
     id: editId || await genId(),
     name, estimatedCost: cost,
     priority: document.getElementById('wi-priority').value,
@@ -1110,6 +1122,21 @@ document.addEventListener('click', async (e) => {
       if (!confirm('Delete this wish item?')) break;
       state.data.wishItems = state.data.wishItems.filter(w => w.id !== id);
       await persist(); toast('Wish item deleted'); renderPage(); break;
+
+    case 'open-compare': openCompareModal(id); break;
+    case 'run-compare': await runCompare(); break;
+    case 'toggle-hidden':
+      if (compareState) { compareState.showHidden[el.dataset.site] = !compareState.showHidden[el.dataset.site]; renderCompareResults(); }
+      break;
+    case 'open-listing':
+      e.preventDefault();
+      if (isShopUrl(el.dataset.url)) await window.api.openExternal(el.dataset.url);
+      break;
+    case 'save-alert': await saveAlert(); break;
+    case 'remove-alert': await saveAlert(true); break;
+    case 'open-alert-settings': await openAlertSettingsModal(); break;
+    case 'save-alert-settings': await saveAlertSettings(); break;
+    case 'check-prices-now': await checkPricesNow(); break;
 
     case 'wish-add-to-budget': openWishToBudgetModal(id); break;
     case 'save-wish-to-budget': await saveWishToBudget(el.dataset.wishId); break;
@@ -1736,10 +1763,247 @@ async function toggleVoiceRecording() {
 }
 
 /* ============================================================
+   PRICE COMPARISON (Daraz vs Bikroy) & PRICE ALERTS
+   ============================================================ */
+const SITE_NAMES = { daraz: 'Daraz', bikroy: 'Bikroy' };
+let compareState = null; // { wishId, query, result, loading, showHidden: { daraz, bikroy } }
+
+function timeAgo(iso) {
+  if (!iso) return '';
+  const mins = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} h ago`;
+  return `${Math.round(hrs / 24)} d ago`;
+}
+
+// Only open real listing pages on the two marketplaces
+function isShopUrl(url) {
+  return /^https:\/\/([a-z0-9-]+\.)*(daraz\.com\.bd|bikroy\.com)\//i.test(url || '');
+}
+
+async function loadPriceWatch() {
+  try { state.priceWatch = await window.api.getPriceWatch(); } catch { state.priceWatch = {}; }
+}
+
+// Small strip on each wish card: lowest price found + alert status
+function wishPriceStrip(w) {
+  const watch = (state.priceWatch || {})[w.id];
+  const alert = w.priceAlert;
+  const alertOn = alert && alert.enabled !== false && alert.below > 0;
+  if (!watch && !alertOn) return '';
+  const c = watch?.cheapest;
+  const hit = alertOn && c && c.price <= alert.below;
+  return `
+    <div class="price-strip${hit ? ' hit' : ''}">
+      ${c
+        ? `<span class="price-strip-main">Lowest: <strong>${fmtCurrency(c.price)}</strong> on ${SITE_NAMES[c.site]}${c.condition ? ` · ${escHtml(c.condition)}` : ''}</span>`
+        : watch ? `<span class="price-strip-main">No exact match found</span>` : ''}
+      ${alertOn ? `<span class="alert-chip${hit ? ' hit' : ''}" title="You get a notification when the price is at or below this">🔔 ${hit ? 'Below target' : 'Alert'} ≤ ${fmtCurrency(alert.below)}</span>` : ''}
+      ${watch?.checkedAt ? `<span class="price-strip-time">checked ${timeAgo(watch.checkedAt)}</span>` : ''}
+    </div>`;
+}
+
+function openCompareModal(wishId) {
+  const wish = getWishItem(wishId);
+  if (!wish) return;
+  compareState = {
+    wishId, query: wish.priceAlert?.query || wish.name,
+    result: null, loading: false, showHidden: { daraz: false, bikroy: false }
+  };
+  const alert = wish.priceAlert || {};
+  openModal(`
+    <div class="modal-header">
+      <div class="modal-title">Compare Prices: ${escHtml(wish.name)}</div>
+      <button class="modal-close" data-action="close-modal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="compare-search">
+        <input id="cmp-query" class="form-input" value="${escHtml(compareState.query)}" placeholder="e.g. galaxy s23 256gb">
+        <button class="btn btn-primary" data-action="run-compare">Search</button>
+      </div>
+      <div class="form-hint" style="margin-top:6px">Be specific: name the exact model. Accessories, spare parts and other models are filtered out${state.data.settings.groqApiKey ? ', with an extra AI check' : ' (add a Groq key in AI Settings for an extra AI check)'}.</div>
+      <div id="cmp-results" class="compare-results"></div>
+      <div class="alert-box">
+        <div class="toggle-row" style="border-top:none;padding-top:0;margin-top:0">
+          <span class="toggle-label" style="font-weight:600">Price alert</span>
+          <label class="toggle">
+            <input type="checkbox" id="cmp-alert-on" ${alert.below > 0 && alert.enabled !== false ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="alert-row">
+          <span>Notify me when this search finds a price at or below</span>
+          <div class="alert-input-wrap"><span>Tk</span><input id="cmp-alert-below" class="form-input" type="number" min="0" value="${alert.below || ''}" placeholder="${wish.estimatedCost || ''}"></div>
+        </div>
+        <div class="form-hint">Checked every ${Number(state.data.settings.priceCheckHours) || 6} hours, using the search text above. <a class="form-hint-link" data-action="open-alert-settings">Alert settings</a></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      ${alert.below > 0 ? `<button class="btn btn-ghost" data-action="remove-alert" style="margin-right:auto">Remove alert</button>` : ''}
+      <button class="btn btn-secondary" data-action="close-modal">Close</button>
+      <button class="btn btn-primary" data-action="save-alert">Save alert</button>
+    </div>`, { wide: true });
+  runCompare();
+}
+
+async function runCompare() {
+  if (!compareState) return;
+  const input = document.getElementById('cmp-query');
+  const query = (input?.value || '').trim();
+  if (!query) { toast('Type what to search for', 'error'); return; }
+  compareState.query = query;
+  compareState.loading = true;
+  renderCompareResults();
+  const myState = compareState;
+  const result = await window.api.searchPrices({ wishId: compareState.wishId, query, apiKey: state.data.settings.groqApiKey || '' });
+  if (compareState !== myState) return; // modal was closed or reopened meanwhile
+  compareState.result = result;
+  compareState.loading = false;
+  await loadPriceWatch();
+  renderCompareResults();
+  if (state.page === 'wishlist') renderPage();
+}
+
+function listingRow(item, hidden) {
+  const img = /^https:\/\//.test(item.image) ? `<img src="${escHtml(item.image)}" alt="" loading="lazy">` : '<div class="listing-noimg"></div>';
+  const meta = [item.condition, item.location, item.seller].filter(Boolean).map(escHtml).join(' · ');
+  return `
+    <a class="listing${hidden ? ' hidden-item' : ''}" data-action="open-listing" data-url="${escHtml(item.url)}" title="Open on ${SITE_NAMES[item.site]}">
+      <div class="listing-img">${img}</div>
+      <div class="listing-main">
+        <div class="listing-title">${escHtml(item.title)}</div>
+        <div class="listing-meta">${hidden ? `<span class="hidden-reason">${escHtml(item.reason)}</span> ` : ''}${meta}</div>
+      </div>
+      <div class="listing-price">${fmtCurrency(item.price)}</div>
+    </a>`;
+}
+
+function siteColumn(site, r) {
+  const showHidden = compareState.showHidden[site];
+  let body;
+  if (!r.ok) body = `<div class="compare-empty error">Couldn't search ${SITE_NAMES[site]}: ${escHtml(r.error)}</div>`;
+  else if (!r.items.length) body = `<div class="compare-empty">No exact match on ${SITE_NAMES[site]}.${r.hidden.length ? ' Try a broader search, or look at the hidden results.' : ''}</div>`;
+  else body = r.items.map(i => listingRow(i, false)).join('');
+  const hiddenList = showHidden ? r.hidden.slice().sort((a, b) => a.price - b.price).map(i => listingRow(i, true)).join('') : '';
+  return `
+    <div class="compare-col">
+      <div class="compare-col-head">
+        <span class="site-name site-${site}">${SITE_NAMES[site]}</span>
+        <span class="compare-count">${r.ok ? `${r.items.length} match${r.items.length === 1 ? '' : 'es'}` : ''}${r.usedAI ? ' · AI checked' : ''}</span>
+      </div>
+      <div class="compare-list">${body}${hiddenList}</div>
+      ${r.hidden?.length ? `<button class="btn btn-ghost btn-sm compare-toggle" data-action="toggle-hidden" data-site="${site}">${showHidden ? 'Hide' : 'Show'} ${r.hidden.length} filtered out (accessories, other models…)</button>` : ''}
+    </div>`;
+}
+
+function renderCompareResults() {
+  const el = document.getElementById('cmp-results');
+  if (!el || !compareState) return;
+  if (compareState.loading) {
+    el.innerHTML = `<div class="scan-loading"><div class="spinner"></div><p>Searching Daraz and Bikroy for “${escHtml(compareState.query)}”…</p></div>`;
+    return;
+  }
+  const r = compareState.result;
+  if (!r) { el.innerHTML = ''; return; }
+  const c = r.cheapest;
+  el.innerHTML = `
+    <div class="compare-summary">
+      ${c ? `Cheapest: <strong>${fmtCurrency(c.price)}</strong> on ${SITE_NAMES[c.site]}${c.condition ? ` (${escHtml(c.condition)})` : ''}` : 'No exact matches found on either site.'}
+    </div>
+    <div class="compare-cols">${siteColumn('daraz', r.daraz)}${siteColumn('bikroy', r.bikroy)}</div>`;
+}
+
+async function saveAlert(remove = false) {
+  const wish = getWishItem(compareState?.wishId);
+  if (!wish) return;
+  if (remove) {
+    delete wish.priceAlert;
+  } else {
+    const on = document.getElementById('cmp-alert-on').checked;
+    const below = parseFloat(document.getElementById('cmp-alert-below').value);
+    const query = (document.getElementById('cmp-query').value || '').trim() || wish.name;
+    if (on && (!below || below <= 0)) { toast('Enter the price you want to be notified at', 'error'); return; }
+    wish.priceAlert = { query, below: below || 0, enabled: on };
+  }
+  await persist();
+  closeModal();
+  toast(remove ? 'Price alert removed' : wish.priceAlert.enabled ? `Alert set: notify at ${fmtCurrency(wish.priceAlert.below)} or less` : 'Alert saved (turned off)', 'success');
+  renderPage();
+}
+
+async function openAlertSettingsModal() {
+  const s = state.data.settings;
+  const startup = await window.api.getStartup();
+  const hours = Number(s.priceCheckHours) || 6;
+  const opts = [1, 3, 6, 12, 24].map(h => `<option value="${h}"${h === hours ? ' selected' : ''}>Every ${h} hour${h > 1 ? 's' : ''}</option>`).join('');
+  compareState = null;
+  openModal(`
+    <div class="modal-header">
+      <div class="modal-title">Price Alert Settings</div>
+      <button class="modal-close" data-action="close-modal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Check prices</label>
+        <select id="pa-hours" class="form-select">${opts}</select>
+      </div>
+      <div class="toggle-row">
+        <div><div class="toggle-label">Keep running in the tray when closed</div>
+          <div class="form-hint">Needed for alerts while the window is closed. Only applies while you have an alert.</div></div>
+        <label class="toggle"><input type="checkbox" id="pa-tray" ${s.keepRunningForAlerts !== false ? 'checked' : ''}><span class="toggle-slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <div><div class="toggle-label">Start with Windows</div>
+          <div class="form-hint">${startup.available ? 'Starts hidden in the tray, so alerts work after a restart.' : 'Available in the installed app only.'}</div></div>
+        <label class="toggle"><input type="checkbox" id="pa-startup" ${startup.enabled ? 'checked' : ''} ${startup.available ? '' : 'disabled'}><span class="toggle-slider"></span></label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-action="check-prices-now" style="margin-right:auto">Check all now</button>
+      <button class="btn btn-secondary" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary" data-action="save-alert-settings">Save</button>
+    </div>`);
+}
+
+async function saveAlertSettings() {
+  const s = state.data.settings;
+  s.priceCheckHours = parseInt(document.getElementById('pa-hours').value, 10);
+  s.keepRunningForAlerts = document.getElementById('pa-tray').checked;
+  const startupEl = document.getElementById('pa-startup');
+  if (!startupEl.disabled) await window.api.setStartup(startupEl.checked);
+  await persist();
+  await window.api.priceSettingsChanged();
+  closeModal();
+  toast('Alert settings saved', 'success');
+}
+
+async function checkPricesNow() {
+  toast('Checking prices for all alerts…');
+  const n = await window.api.checkPricesNow();
+  await loadPriceWatch();
+  if (state.page === 'wishlist') renderPage();
+  toast(n ? `Checked ${n} item${n > 1 ? 's' : ''}` : 'No active alerts to check', n ? 'success' : 'default');
+}
+
+// Search on Enter in the compare box
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.id === 'cmp-query') { e.preventDefault(); runCompare(); }
+});
+
+// Background checks finished: refresh the cards
+window.api.onPriceWatchUpdated(async () => {
+  await loadPriceWatch();
+  if (state.page === 'wishlist' && document.getElementById('modal-overlay').classList.contains('hidden')) renderPage();
+});
+
+/* ============================================================
    INIT
    ============================================================ */
 async function init() {
   await loadData();
+  await loadPriceWatch();
   navigate('budget');
 }
 
